@@ -5,10 +5,10 @@
 ## Installation
 
 ```bash
-source .pywarper/bin/activate
-uv pip install ".[dev]"
+git clone https://github.com/berenslab/pywarper.git
+pip install -e pywarper
 ```
 
 ## Usage
 
-See the example notebook.
+See the [example](https://github.com/berenslab/pywarper/blob/main/notebooks/example.ipynb) notebook for usage. 
