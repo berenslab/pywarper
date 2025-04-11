@@ -1,4 +1,5 @@
 import time
+from typing import Optional
 
 import numpy as np
 from pygridfit import GridFit
@@ -11,8 +12,15 @@ from scipy.sparse.linalg import spsolve
 def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray, 
                 xmax: int|None = None, ymax: int|None = None,
                 smoothness: int = 1,
-                # skip:int = 3
-                ):
+                extend: str = "warning",
+                interp: str = "triangle",
+                regularizer: str = "gradient",
+                solver: str = "normal",
+                maxiter: Optional[int] = None,
+                autoscale: str = "on",
+                xscale: float = 1.0,
+                yscale: float = 1.0,
+            )-> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
     if xmax is None:
         xmax = np.max(x).astype(float)
@@ -24,8 +32,17 @@ def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     # xnodes = np.arange(0, xmax+skip, skip)
     # ynodes = np.arange(0, ymax+skip, skip)
 
-    gf = GridFit(x, y, z, xnodes, ynodes, smoothness=smoothness)
-    gf.fit()
+    gf = GridFit(x, y, z, xnodes, ynodes, 
+                    smoothness=smoothness,
+                    extend=extend,
+                    interp=interp,
+                    regularizer=regularizer,
+                    solver=solver,
+                    maxiter=maxiter,
+                    autoscale=autoscale,
+                    xscale=xscale,
+                    yscale=yscale,
+        ).fit()
     zgrid = gf.zgrid
 
     zmesh, xmesh, ymesh = resample_zgrid(
