@@ -185,11 +185,11 @@ def warp_arbor(nodes, edges, radii, surface_mapping, conformal_jump=1, verbose=F
     # return top_input_pos, bot_input_pos, top_output_pos, bot_output_pos
 
     # Apply local least-squares registration to each node
-    window = 5 * conformal_jump
+    # window = 5 * conformal_jump
     if verbose:
         print("Warping nodes...")
         start_time = time.time()
-    warped_nodes = local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos, window=window)
+    warped_nodes = local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos)
     if verbose:
         print(f"Nodes warped in {time.time() - start_time:.2f} seconds.")
 

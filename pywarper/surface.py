@@ -6,7 +6,14 @@ from pygridfit import GridFit
 from scipy.interpolate import RegularGridInterpolator
 from scipy.signal import convolve2d
 from scipy.sparse import coo_matrix, hstack, vstack
-from sksparse.cholmod import cholesky
+from scipy.sparse.linalg import spsolve
+
+try:
+    from sksparse.cholmod import cholesky
+    HAS_CHOLMOD = True
+except ImportError:
+    HAS_CHOLMOD = False
+    print("[Info] scikit-sparse not found. Falling back to scipy.sparse.linalg.spsolve.")
 
 
 def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray, 
@@ -259,7 +266,11 @@ def conformal_map_indep_fixed_diagonals(mainDiagDist, skewDiagDist, xpos, ypos, 
 
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
-        sol = cholesky(AtA)(Atb)
+
+        if HAS_CHOLMOD:
+            sol = cholesky(AtA)(Atb)
+        else:
+            sol = spsolve(AtA, Atb)
 
         num_free = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
