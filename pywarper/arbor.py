@@ -4,7 +4,7 @@ import numpy as np
 from numpy.linalg import lstsq
 
 
-def local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos, window=5, max_order=2):
+def local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos, window=5, max_order=2):    
     """
     Applies a local least-squares polynomial transformation to each node based on nearby surface correspondences.
 
@@ -19,72 +19,92 @@ def local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, b
 
     Returns:
     - transformed_nodes: Nx3 array of transformed [x, y, z] positions
-    """
+    """    
     transformed_nodes = np.zeros_like(nodes)
+    
+    # Combine top/bottom input positions with outputs once
+    top_in_xy = top_input_pos[:, :2]
+    bot_in_xy = bot_input_pos[:, :2]
 
-    for k in range(nodes.shape[0]):
-        x, y, z = nodes[k]
+    for k, (x, y, z) in enumerate(nodes):
+        lx, ux = x - window, x + window
+        ly, uy = y - window, y + window
 
-        # Extract local neighborhood
-        lx, ux = int(round(x - window)), int(round(x + window))
-        ly, uy = int(round(y - window)), int(round(y + window))
+        # Find indices once (reuse masks)
+        top_mask = ((top_in_xy[:, 0] >= lx) & (top_in_xy[:, 0] <= ux) &
+                    (top_in_xy[:, 1] >= ly) & (top_in_xy[:, 1] <= uy))
+        bot_mask = ((bot_in_xy[:, 0] >= lx) & (bot_in_xy[:, 0] <= ux) &
+                    (bot_in_xy[:, 1] >= ly) & (bot_in_xy[:, 1] <= uy))
 
-        in_top = top_input_pos[(top_input_pos[:, 0] >= lx) & (top_input_pos[:, 0] <= ux) &
-                               (top_input_pos[:, 1] >= ly) & (top_input_pos[:, 1] <= uy)]
-        in_bot = bot_input_pos[(bot_input_pos[:, 0] >= lx) & (bot_input_pos[:, 0] <= ux) &
-                               (bot_input_pos[:, 1] >= ly) & (bot_input_pos[:, 1] <= uy)]
-        out_top = top_output_pos[(top_input_pos[:, 0] >= lx) & (top_input_pos[:, 0] <= ux) &
-                                 (top_input_pos[:, 1] >= ly) & (top_input_pos[:, 1] <= uy)]
-        out_bot = bot_output_pos[(bot_input_pos[:, 0] >= lx) & (bot_input_pos[:, 0] <= ux) &
-                                 (bot_input_pos[:, 1] >= ly) & (bot_input_pos[:, 1] <= uy)]
+        in_top, out_top = top_input_pos[top_mask], top_output_pos[top_mask]
+        in_bot, out_bot = bot_input_pos[bot_mask], bot_output_pos[bot_mask]
 
         this_in = np.vstack([in_top, in_bot])
         this_out = np.vstack([out_top, out_bot])
 
         if len(this_in) < 12:
-            # Not enough points for a stable fit
             transformed_nodes[k] = nodes[k]
             continue
 
-        # Center coordinates
-        x_shift = np.mean(this_in[:, 0])
-        y_shift = np.mean(this_in[:, 1])
-        this_in[:, 0] -= x_shift
-        this_out[:, 0] -= x_shift
-        this_in[:, 1] -= y_shift
-        this_out[:, 1] -= y_shift
+        # Center coordinates (in-place avoided)
+        x_shift, y_shift = np.mean(this_in[:, :2], axis=0)
+        this_in_centered = this_in.copy()
+        this_out_centered = this_out.copy()
 
-        # Build polynomial basis
-        X = []
-        for i in range(this_in.shape[0]):
-            terms = [this_in[i, 0], this_in[i, 1], 1.0]
-            for total_order in range(2, max_order + 1):
-                for o in range(total_order + 1):
-                    terms.insert(0, this_in[i, 0]**o * this_in[i, 1]**(total_order - o))
-            base_terms = np.array(terms)
-            z_modulated = this_in[i, 2] * base_terms
-            X.append(np.concatenate([base_terms, z_modulated]))
-        X = np.vstack(X)
+        this_in_centered[:, 0] -= x_shift
+        this_out_centered[:, 0] -= x_shift
+        this_in_centered[:, 1] -= y_shift
+        this_out_centered[:, 1] -= y_shift
 
-        # Solve local linear system
-        T, _, _, _ = lstsq(X, this_out, rcond=None)
+        # Efficient polynomial basis creation
+        xin, yin, zin = this_in_centered.T
+        basis_cols = []
 
-        # Build transform for current node
+        # Constant term
+        basis_cols.append(np.ones_like(xin))
+
+        # Linear terms
+        basis_cols.extend([xin, yin])
+
+        # Higher-order terms
+        for order in range(2, max_order + 1):
+            for ox in range(order + 1):
+                oy = order - ox
+                basis_cols.append((xin ** ox) * (yin ** oy))
+
+        # Stack basis columns once
+        base_terms = np.vstack(basis_cols).T  # shape: (n_points, n_terms)
+
+        # Z-modulated terms
+        z_modulated = base_terms * zin[:, np.newaxis]
+
+        # Combined X matrix
+        X = np.hstack([base_terms, z_modulated])
+
+        # Solve linear system efficiently
+        T, _, _, _ = lstsq(X, this_out_centered, rcond=None)
+
+        # Build basis for current node (single-step, no insertions)
         node_xy = np.array([x - x_shift, y - y_shift])
-        terms = [node_xy[0], node_xy[1], 1.0]
-        for total_order in range(2, max_order + 1):
-            for o in range(total_order + 1):
-                terms.insert(0, node_xy[0]**o * node_xy[1]**(total_order - o))
-        base_terms = np.array(terms)
-        z_modulated = z * base_terms
-        final_input = np.concatenate([base_terms, z_modulated])
+        nx, ny = node_xy
+        basis_eval = [1.0, nx, ny]
+
+        for order in range(2, max_order + 1):
+            for ox in range(order + 1):
+                oy = order - ox
+                basis_eval.append((nx ** ox) * (ny ** oy))
+
+        basis_eval = np.array(basis_eval)
+        z_modulated_eval = z * basis_eval
+
+        final_input = np.concatenate([basis_eval, z_modulated_eval])
         new_pos = final_input @ T
+
         new_pos[0] += x_shift
         new_pos[1] += y_shift
         transformed_nodes[k] = new_pos
 
     return transformed_nodes
-
 def warp_arbor(nodes, edges, radii, surface_mapping, verbose=False):
     """
     Applies a local surface flattening to a neuronal arbor using surface mapping results.

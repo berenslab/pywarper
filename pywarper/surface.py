@@ -5,8 +5,8 @@ import numpy as np
 from pygridfit import GridFit
 from scipy.interpolate import RegularGridInterpolator
 from scipy.signal import convolve2d
-from scipy.sparse import csr_matrix, hstack, lil_matrix, vstack
-from scipy.sparse.linalg import spsolve
+from scipy.sparse import coo_matrix, hstack, vstack
+from sksparse.cholmod import cholesky
 
 
 def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray, 
@@ -206,135 +206,88 @@ def conformal_map_indep_fixed_diagonals(mainDiagDist, skewDiagDist, xpos, ypos, 
     M, N = VZmesh.shape
     xpos_new = xpos + 1
     ypos_new = ypos + 1
-    triangleCount = (2*M - 2)*(N - 1)
-    vertexCount = M * N
+    vertexCount:int = M * N
+    triangleCount = (2 * M - 2) * (N - 1)
 
-    # Build triangulation
-    col1 = np.kron([1, 1], np.arange(1, M)).reshape(-1, 1)
-    temp1 = np.kron([1, M+1], np.ones(M-1)).reshape(-1, 1)
-    temp2 = np.kron([M+1, M], np.ones(M-1)).reshape(-1, 1)
-    one_column = np.hstack([col1, col1 + temp1, col1 + temp2]) - 1
+    # Efficient triangulation construction
+    col1 = np.kron([1, 1], np.arange(M - 1)).reshape(-1, 1)
+    temp1 = np.kron([1, M + 1], np.ones(M - 1)).reshape(-1, 1)
+    temp2 = np.kron([M + 1, M], np.ones(M - 1)).reshape(-1, 1)
+    one_column = np.hstack([col1, col1 + temp1, col1 + temp2]).astype(int)
 
-    triangulation = np.zeros((triangleCount, 3), dtype=int)
-    for kk in range(N - 1):
-        offset = kk * M
-        start = kk * (2*M - 2)
-        end = start + (2*M - 2)
-        triangulation[start:end] = one_column + offset
+    # Corrected broadcasting logic
+    one_column_tiled = np.tile(one_column, (N - 1, 1))
+    offsets = (np.repeat(np.arange(N - 1), 2 * M - 2) * M).reshape(-1, 1)
+    triangulation = (one_column_tiled + offsets).astype(int)
 
-    # Sparse matrices
-    Mreal = lil_matrix((triangleCount, vertexCount))
-    Mimag = lil_matrix((triangleCount, vertexCount))
+    # Precompute arrays
+    row_indices = np.repeat(np.arange(triangleCount), 3)
+    col_indices = triangulation.flatten()
 
-    # Assign local coordinates and fill sparse matrices
+    Mreal_data = np.zeros(triangleCount * 3)
+    Mimag_data = np.zeros(triangleCount * 3)
+
+    # Loop once to fill the data
     for tri_idx in range(triangleCount):
-        triangle = []
-        for vertex in triangulation[tri_idx]:
-            xind = vertex % M
-            yind = vertex // M
-            triangle.append([xpos_new[xind], ypos_new[yind], VZmesh[xind, yind]])
-        triangle = np.array(triangle)
-        w1, w2, w3, zeta = assign_local_coordinates(triangle)
+        vertices = triangulation[tri_idx]
+        coords = np.column_stack((
+            xpos_new[vertices % M],
+            ypos_new[vertices // M],
+            VZmesh[vertices % M, vertices // M]
+        ))
+        w1, w2, w3, zeta = assign_local_coordinates(coords)
         denom = np.sqrt(zeta / 2)
         ws = [w1, w2, w3]
-        for j, vertex in enumerate(triangulation[tri_idx]):
-            Mreal[tri_idx, vertex] = np.real(ws[j]) / denom
-            Mimag[tri_idx, vertex] = np.imag(ws[j]) / denom
 
-    # Fix points for main diagonal
-    mainDiagXdist = mainDiagDist * M / np.sqrt(M**2 + N**2)
-    mainDiagYdist = mainDiagXdist * N / M
+        idx = slice(tri_idx * 3, (tri_idx + 1) * 3)
+        Mreal_data[idx] = np.real(ws) / denom
+        Mimag_data[idx] = np.imag(ws) / denom
 
-    fixed = [0, vertexCount - 1]
-    free = list(range(1, vertexCount - 1))
-    Mreal_csr = Mreal.tocsr()
-    Mimag_csr = Mimag.tocsr()
+    # Build sparse matrices in one step
+    Mreal_csr = coo_matrix((Mreal_data, (row_indices, col_indices)), shape=(triangleCount, vertexCount)).tocsr()
+    Mimag_csr = coo_matrix((Mimag_data, (row_indices, col_indices)), shape=(triangleCount, vertexCount)).tocsr()
 
-    A_main = vstack([
-        hstack([Mreal_csr[:, free], -Mimag_csr[:, free]]),
-        hstack([Mimag_csr[:, free],  Mreal_csr[:, free]])
+    def solve_mapping(fixed_pts, fixed_vals, free_pts):
+        A = vstack([
+            hstack([Mreal_csr[:, free_pts], -Mimag_csr[:, free_pts]]),
+            hstack([Mimag_csr[:, free_pts], Mreal_csr[:, free_pts]])
+        ])
+
+        b_real = Mreal_csr[:, fixed_pts] @ fixed_vals[:, 0] - Mimag_csr[:, fixed_pts] @ fixed_vals[:, 1]
+        b_imag = Mimag_csr[:, fixed_pts] @ fixed_vals[:, 0] + Mreal_csr[:, fixed_pts] @ fixed_vals[:, 1]
+        b = -np.concatenate([b_real, b_imag])
+
+        AtA = (A.T @ A).tocsc()
+        Atb = A.T @ b
+        sol = cholesky(AtA)(Atb)
+
+        num_free = len(free_pts)
+        mapped = np.zeros((vertexCount, 2))
+        mapped[fixed_pts] = fixed_vals
+        mapped[free_pts, 0] = sol[:num_free]
+        mapped[free_pts, 1] = sol[num_free:]
+        return mapped
+
+    diag_scale = M / np.sqrt(M**2 + N**2)
+    main_diag_fixed_pts = [0, vertexCount - 1]
+    main_diag_fixed_vals = np.array([
+        [xpos_new[0], ypos_new[0]],
+        [xpos_new[0] + mainDiagDist * diag_scale, ypos_new[0] + mainDiagDist * diag_scale * N / M]
     ])
+    main_diag_free_pts = np.setdiff1d(np.arange(vertexCount), main_diag_fixed_pts)
+    mapped_main = solve_mapping(main_diag_fixed_pts, main_diag_fixed_vals, main_diag_free_pts)
 
-    fixed_vec = np.array([[xpos_new[0]], [xpos_new[0] + mainDiagXdist], [ypos_new[0]], [ypos_new[0] + mainDiagYdist]])
-
-    xr = Mreal_csr[:, fixed] @ fixed_vec[:2]
-    yr = Mimag_csr[:, fixed] @ fixed_vec[2:]
-    xi = Mimag_csr[:, fixed] @ fixed_vec[:2]
-    yi = Mreal_csr[:, fixed] @ fixed_vec[2:]
-
-    top = csr_matrix(xr - yr)
-    bottom = csr_matrix(xi + yi)
-
-    b_main = -vstack([top, bottom]).toarray().ravel()
-    
-    sol_main = spsolve(A_main.T @ A_main, A_main.T @ b_main)
-    
-    mapped_main = np.zeros((vertexCount, 2))
-    mapped_main[0] = [xpos_new[0], ypos_new[0]]
-    mapped_main[1:-1, 0] = sol_main[:len(sol_main)//2]
-    mapped_main[1:-1, 1] = sol_main[len(sol_main)//2:]
-    mapped_main[-1] = [xpos_new[0] + mainDiagXdist, ypos_new[0] + mainDiagYdist]
-
-    # Fix points for skew diagonal
-    skewDiagXdist = skewDiagDist * M / np.sqrt(M**2 + N**2)
-    skewDiagYdist = skewDiagXdist * N / M
-
-    # Match MATLAB's freeVar: [1:M-1, M+1:M*N-M, M*N-M+2:M*N] (0-based)
-    freeVar = np.concatenate([
-        np.arange(0, M - 1),
-        np.arange(M, vertexCount - M),
-        np.arange(vertexCount - M + 1, vertexCount)
+    skew_diag_fixed_pts = [M - 1, vertexCount - M]
+    skew_diag_fixed_vals = np.array([
+        [xpos_new[0] + skewDiagDist * diag_scale, ypos_new[0]],
+        [xpos_new[0], ypos_new[0] + skewDiagDist * diag_scale * N / M]
     ])
+    skew_diag_free_pts = np.setdiff1d(np.arange(vertexCount), skew_diag_fixed_pts)
+    mapped_skew = solve_mapping(skew_diag_fixed_pts, skew_diag_fixed_vals, skew_diag_free_pts)
 
-    fixed_skew = [M - 1, vertexCount - M]
-
-    A_skew = vstack([
-        hstack([Mreal_csr[:, freeVar], -Mimag_csr[:, freeVar]]),
-        hstack([Mimag_csr[:, freeVar],  Mreal_csr[:, freeVar]])
-    ])
-
-    fixed_vec_skew = np.array([[xpos_new[0] + skewDiagXdist], [xpos_new[0]], [ypos_new[0]], [ypos_new[0] + skewDiagYdist]])
-
-    xr_skew = Mreal_csr[:, fixed_skew] @ fixed_vec_skew[:2]
-    yr_skew = Mimag_csr[:, fixed_skew] @ fixed_vec_skew[2:]
-    xi_skew = Mimag_csr[:, fixed_skew] @ fixed_vec_skew[:2]
-    yi_skew = Mreal_csr[:, fixed_skew] @ fixed_vec_skew[2:]
-
-    top_skew = csr_matrix(xr_skew - yr_skew)
-    bottom_skew = csr_matrix(xi_skew + yi_skew)
-
-    b_skew = -vstack([top_skew, bottom_skew]).toarray().ravel()
-
-    # Solve using direct least squares
-    sol_skew = spsolve(A_skew.T @ A_skew, A_skew.T @ b_skew)
-
-    # Reassemble mapped_skew like in MATLAB
-    mapped_skew = np.zeros((vertexCount, 2))
-
-    # Get total free variable count
-    n_free = len(freeVar)
-
-    # X part
-    x_part = sol_skew[:n_free]
-
-    mapped_skew[:M - 1, 0] = x_part[:M - 1]
-    mapped_skew[M - 1, 0] = xpos_new[0] + skewDiagXdist
-    mapped_skew[M:vertexCount - M, 0] = x_part[M - 1:n_free - (M - 1)]
-    mapped_skew[vertexCount - M, 0] = xpos_new[0]
-    mapped_skew[vertexCount - M + 1:, 0] = x_part[n_free - (M - 1):]
-
-    # Y part
-    y_part = sol_skew[n_free:]
-    mapped_skew[:M - 1, 1] = y_part[:M - 1]
-    mapped_skew[M - 1, 1] = ypos_new[0]
-    mapped_skew[M:vertexCount - M, 1] = y_part[M - 1:n_free - (M - 1)]
-    mapped_skew[vertexCount - M, 1] = ypos_new[0] + skewDiagYdist
-    mapped_skew[vertexCount - M + 1:, 1] = y_part[n_free - (M - 1):]
-
-    # Average both results
+    # Final averaged result
     mappedPositions = (mapped_main + mapped_skew) / 2
     return mappedPositions
-
 
 def align_mapped_surface(thisVZminmesh, thisVZmaxmesh,
                          mappedMinPositions, mappedMaxPositions,

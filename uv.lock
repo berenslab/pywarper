@@ -1426,7 +1426,7 @@ wheels = [
 
 [[package]]
 name = "pygridfit"
-version = "0.1.2"
+version = "0.1.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib", version = "3.9.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
@@ -1439,9 +1439,9 @@ dependencies = [
     { name = "scipy", version = "1.15.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "watermark" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ec/8d/3f9c6038f283f1823dd1132145f75a2fb7d2410514635d069b3a9263024e/pygridfit-0.1.2.tar.gz", hash = "sha256:4cee388fa658118306259865b49fc01ed738397bc60179572af3330894203eb0", size = 1246799 }
+sdist = { url = "https://files.pythonhosted.org/packages/25/7c/91d44467bad624240aceb58d880a2b059fdbea41b3f0fc2043a06acb4e7f/pygridfit-0.1.3.tar.gz", hash = "sha256:b5f8fcaf5d88ad8048d9ea6f22aa2b0f6f756c2cc0faea641ae213541c979ca8", size = 1246886 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e4/23/80796557449fd06619b966db556cc572d4e16b312d8cc580e5dc76147570/pygridfit-0.1.2-py3-none-any.whl", hash = "sha256:370bf36e6abb21cb00e16aefa13c203168929d04a6ed2d538deb8267928b2eb1", size = 16017 },
+    { url = "https://files.pythonhosted.org/packages/17/cc/2debf4044a39c7b848ed5363e2952459776e0a7943a2376b132617c62a76/pygridfit-0.1.3-py3-none-any.whl", hash = "sha256:f01d5b165668bddf6a7b0e84cedf23a6a74ec8a61d76d87a39dfb4c3bae400d2", size = 16154 },
 ]
 
 [[package]]
@@ -1500,6 +1500,7 @@ dependencies = [
     { name = "numpy", version = "2.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "pandas" },
     { name = "pygridfit" },
+    { name = "scikit-sparse" },
     { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
     { name = "scipy", version = "1.15.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
     { name = "watermark" },
@@ -1518,9 +1519,10 @@ requires-dist = [
     { name = "maturin", marker = "extra == 'dev'" },
     { name = "numpy", specifier = ">=2.0.2" },
     { name = "pandas", specifier = ">=2.2.3" },
-    { name = "pygridfit", specifier = ">=0.1.2" },
+    { name = "pygridfit", specifier = ">=0.1.3" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "scikit-sparse", specifier = ">=0.4.15" },
     { name = "scipy", specifier = ">=1.13.1" },
     { name = "twine", marker = "extra == 'dev'" },
     { name = "watermark", specifier = ">=2.5.0" },
@@ -1668,6 +1670,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/79/35/b1d2188967c3204c78fa79c9263668cf1b98060e8e58d1a730fe5b2317bb/scikit_learn-1.6.1-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b8b7a3b86e411e4bce21186e1c180d792f3d99223dcfa3b4f597ecc92fa1a422", size = 13518605 },
     { url = "https://files.pythonhosted.org/packages/fb/d8/8d603bdd26601f4b07e2363032b8565ab82eb857f93d86d0f7956fcf4523/scikit_learn-1.6.1-cp39-cp39-win_amd64.whl", hash = "sha256:7a73d457070e3318e32bdb3aa79a8d990474f19035464dfd8bede2883ab5dc3b", size = 11155078 },
 ]
+
+[[package]]
+name = "scikit-sparse"
+version = "0.4.15"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "numpy", version = "2.2.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+    { name = "scipy", version = "1.13.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },
+    { name = "scipy", version = "1.15.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.10'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8e/d6/b8da5eba54ab7ca452e4ae3352d3ee05b8bc3102dddc039a358e9e6d3a5e/scikit_sparse-0.4.15.tar.gz", hash = "sha256:a0b1ef1bbe9e28e5c6d2838c63c62e094a8098d11a736771edac55ccc5f9eabe", size = 214398 }
 
 [[package]]
 name = "scipy"

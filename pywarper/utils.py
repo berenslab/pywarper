@@ -3,13 +3,32 @@ import pandas as pd
 # import numpy as np
 # import scipy.spatial
 
-
-def read_arbor_trace(datapath):
-
+def read_arbor_trace(datapath, downsample_factor=1):
+    # Read the SWC file into a DataFrame
     df = pd.read_csv(datapath, comment='#',
-                      names=['n', 'type', 'x', 'y', 'z', 'radius', 'parent'], index_col=False, sep=r'\s+')
+                     names=['n', 'type', 'x', 'y', 'z', 'radius', 'parent'],
+                     index_col=False, sep=r'\s+')
+
+    if downsample_factor > 1:
+        # Downsample the DataFrame by selecting every nth point
+        downsampled_df = df.iloc[::downsample_factor].copy()
+
+        # Update the indices
+        id_map = {old_id: new_id for new_id, old_id in enumerate(downsampled_df['n'], start=1)}
+        downsampled_df['n'] = downsampled_df['n'].map(id_map)
+        downsampled_df['parent'] = downsampled_df['parent'].map(lambda x: id_map.get(x, -1))
+
+        df = downsampled_df
 
     return df, df[["x", "y", "z"]].values, df[["n", "parent"]].values, df["radius"].values
+
+
+# def read_arbor_trace(datapath):
+
+#     df = pd.read_csv(datapath, comment='#',
+#                       names=['n', 'type', 'x', 'y', 'z', 'radius', 'parent'], index_col=False, sep=r'\s+')
+
+#     return df, df[["x", "y", "z"]].values, df[["n", "parent"]].values, df["radius"].values
 
 # def summarize_z_at_sampled_xy(x, y, z, grid_spacing=10, radius=5, percentiles=[10, 25, 50, 75, 90]):
 #     """
