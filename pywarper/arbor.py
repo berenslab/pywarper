@@ -105,7 +105,8 @@ def local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, b
         transformed_nodes[k] = new_pos
 
     return transformed_nodes
-def warp_arbor(nodes, edges, radii, surface_mapping, verbose=False):
+
+def warp_arbor(nodes, edges, radii, surface_mapping, conformal_jump=1, verbose=False):
     """
     Applies a local surface flattening to a neuronal arbor using surface mapping results.
 
@@ -139,8 +140,10 @@ def warp_arbor(nodes, edges, radii, surface_mapping, verbose=False):
     
     # Convert MATLAB 1-based inclusive ranges to Python slices
     # If thisx/thisy are consecutive integer indices:
-    x_vals = np.arange(thisx[0], thisx[-1] + 1)  # matches [thisx(1):thisx(end)] in MATLAB
-    y_vals = np.arange(thisy[0], thisy[-1] + 1)  # matches [thisy(1):thisy(end)] in MATLAB
+    # x_vals = np.arange(thisx[0], thisx[-1] + 1)  # matches [thisx(1):thisx(end)] in MATLAB
+    # y_vals = np.arange(thisy[0], thisy[-1] + 1)  # matches [thisy(1):thisy(end)] in MATLAB
+    x_vals = np.arange(thisx[0], thisx[-1] + 1, conformal_jump)
+    y_vals = np.arange(thisy[0], thisy[-1] + 1, conformal_jump)
 
     # Create a meshgrid shaped like MATLAB's [tmpymesh, tmpxmesh] = meshgrid(yRange, xRange).
     # This means we want shape (len(x_vals), len(y_vals)) for each array, with row=“x”, col=“y”:
@@ -182,10 +185,11 @@ def warp_arbor(nodes, edges, radii, surface_mapping, verbose=False):
     # return top_input_pos, bot_input_pos, top_output_pos, bot_output_pos
 
     # Apply local least-squares registration to each node
+    window = 5 * conformal_jump
     if verbose:
         print("Warping nodes...")
         start_time = time.time()
-    warped_nodes = local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos)
+    warped_nodes = local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos, window=window)
     if verbose:
         print(f"Nodes warped in {time.time() - start_time:.2f} seconds.")
 
