@@ -4,22 +4,51 @@ import numpy as np
 from numpy.linalg import lstsq
 
 
-def local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos, window=5, max_order=2):    
+def local_ls_registration(
+    nodes: np.ndarray,
+    top_input_pos: np.ndarray,
+    bot_input_pos: np.ndarray,
+    top_output_pos: np.ndarray,
+    bot_output_pos: np.ndarray,
+    window: float = 5.0,
+    max_order: int = 2
+) -> np.ndarray:
     """
-    Applies a local least-squares polynomial transformation to each node based on nearby surface correspondences.
+    Applies a local least-squares polynomial transformation to each node based on nearby
+    surface correspondences from the top and bottom “bands” (layers).
 
-    Parameters:
-    - nodes: Nx3 array of [x, y, z] positions to be transformed
-    - top_input_pos: Mx3 array of surface coordinates on the top band (original)
-    - bot_input_pos: Mx3 array of surface coordinates on the bottom band (original)
-    - top_output_pos: Mx3 array of mapped coordinates on the top band (flattened)
-    - bot_output_pos: Mx3 array of mapped coordinates on the bottom band (flattened)
-    - window: neighborhood radius in pixels
-    - max_order: maximum total polynomial order (e.g., 2 for quadratic)
+    Parameters
+    ----------
+    nodes : np.ndarray
+        (N, 3) array of [x, y, z] positions to be transformed.
+    top_input_pos : np.ndarray
+        (M, 3) array of [x, y, z] coordinates for the top band (original space).
+    bot_input_pos : np.ndarray
+        (M, 3) array of [x, y, z] coordinates for the bottom band (original space).
+    top_output_pos : np.ndarray
+        (M, 3) array of mapped [x, y, z] coordinates for the top band (flattened space).
+    bot_output_pos : np.ndarray
+        (M, 3) array of mapped [x, y, z] coordinates for the bottom band (flattened space).
+    window : float, default=5.0
+        Neighborhood radius (in pixels/units) for local polynomial fitting.
+    max_order : int, default=2
+        Maximum total polynomial order for the local transformation model.
+        For example, 2 indicates quadratic terms.
 
-    Returns:
-    - transformed_nodes: Nx3 array of transformed [x, y, z] positions
-    """    
+    Returns
+    -------
+    np.ndarray
+        (N, 3) array of transformed [x, y, z] positions, the result of applying
+        the local least-squares fits to each node.
+
+    Notes
+    -----
+    The function constructs a polynomial basis (constant, linear, up to max_order
+    in both x and y), plus terms modulated by z. A least-squares system is solved
+    locally for each node, using points in the top and bottom surfaces within
+    the specified window. If insufficient points are found, the node remains
+    unchanged.
+    """
     transformed_nodes = np.zeros_like(nodes)
     
     # Combine top/bottom input positions with outputs once
@@ -106,23 +135,68 @@ def local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, b
 
     return transformed_nodes
 
-def warp_arbor(nodes, edges, radii, surface_mapping, conformal_jump=1, verbose=False):
+def warp_arbor(
+    nodes: np.ndarray,
+    edges: np.ndarray,
+    radii: np.ndarray,
+    surface_mapping: dict,
+    conformal_jump: int = 1,
+    verbose: bool = False
+) -> dict:
     """
-    Applies a local surface flattening to a neuronal arbor using surface mapping results.
+    Applies a local surface flattening (warp) to a neuronal arbor using the results
+    of previously computed surface mappings.
 
-    Parameters:
-    - nodes: Nx3 array of [x, y, z] coordinates of the arbor
-    - edges: Ex2 array of arbor connectivity
-    - radii: N-length array of node radii
-    - surface_mapping: dict with keys:
-        - 'mappedMinPositions', 'mappedMaxPositions'
-        - 'thisVZminmesh', 'thisVZmaxmesh'
-        - 'thisx', 'thisy'
-    - voxel_dim: 1x3 list or array with physical voxel dimensions in µm
-    - conformal_jump: downsampling step size used during conformal mapping
+    Parameters
+    ----------
+    nodes : np.ndarray
+        (N, 3) array of [x, y, z] coordinates for the arbor to be warped.
+    edges : np.ndarray
+        (E, 2) array of indices defining connectivity between nodes.
+    radii : np.ndarray
+        (N,) array of radii corresponding to each node.
+    surface_mapping : dict
+        Dictionary containing keys:
+          - "mapped_min_positions" : np.ndarray
+              (X*Y, 2) mapped coordinates for one surface band (e.g., "min" band).
+          - "mapped_max_positions" : np.ndarray
+              (X*Y, 2) mapped coordinates for the other surface band (e.g., "max" band).
+          - "thisVZminmesh" : np.ndarray
+              (X, Y) mesh representing the first surface (“min” band) in 3D space.
+          - "thisVZmaxmesh" : np.ndarray
+              (X, Y) mesh representing the second surface (“max” band) in 3D space.
+          - "thisx" : np.ndarray
+              1D array of x-indices (possibly downsampled) used during mapping.
+          - "thisy" : np.ndarray
+              1D array of y-indices (possibly downsampled) used during mapping.
+    conformal_jump : int, default=1
+        Step size used in the conformal mapping (downsampling factor).
+    verbose : bool, default=False
+        If True, prints timing and progress information.
 
-    Returns:
-    - warped_arbor: dict with updated 'nodes', 'edges', 'radii', 'medVZmin', 'medVZmax'
+    Returns
+    -------
+    dict
+        Dictionary containing:
+          - "nodes": np.ndarray
+              (N, 3) warped [x, y, z] coordinates after applying local registration.
+          - "edges": np.ndarray
+              (E, 2) connectivity array (passed through unchanged).
+          - "radii": np.ndarray
+              (N,) radii array (passed through unchanged).
+          - "medVZmin": float
+              Median z-value of the “min” surface mesh within the region of interest.
+          - "medVZmax": float
+              Median z-value of the “max” surface mesh within the region of interest.
+
+    Notes
+    -----
+    1. The function extracts a subregion of the surfaces according to thisx/thisy and
+       conformal_jump, matching the flattening step used in the mapping.
+    2. Each node in `nodes` is then warped via local least-squares registration
+       (`local_ls_registration`), referencing top (min) and bottom (max) surfaces.
+    3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
+       reference planes in further analyses.
     """
 
     # Unpack mappings and surfaces
@@ -202,7 +276,7 @@ def warp_arbor(nodes, edges, radii, surface_mapping, conformal_jump=1, verbose=F
         'edges': edges,
         'radii': radii,
         'medVZmin': med_VZmin,
-        'medVZmax': med_VZmax
+        'medVZmax': med_VZmax,
     }
 
     return warped_arbor

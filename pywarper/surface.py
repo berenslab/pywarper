@@ -16,19 +16,69 @@ except ImportError:
     print("[Info] scikit-sparse not found. Falling back to scipy.sparse.linalg.spsolve.")
 
 
-def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray, 
-                xmax: Optional[int] = None, ymax: Optional[int] = None,
-                smoothness: int = 1,
-                extend: str = "warning",
-                interp: str = "triangle",
-                regularizer: str = "gradient",
-                solver: str = "normal",
-                maxiter: Optional[int] = None,
-                autoscale: str = "on",
-                xscale: float = 1.0,
-                yscale: float = 1.0,
-            )-> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def fit_surface(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    xmax: Optional[int] = None,
+    ymax: Optional[int] = None,
+    smoothness: int = 1,
+    extend: str = "warning",
+    interp: str = "triangle",
+    regularizer: str = "gradient",
+    solver: str = "normal",
+    maxiter: Optional[int] = None,
+    autoscale: str = "on",
+    xscale: float = 1.0,
+    yscale: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Fits a surface to scattered data points (x, y, z) using grid-based interpolation
+    and smoothing. Internally uses a GridFit-based approach to produce a 2D surface.
 
+    Parameters
+    ----------
+    x : np.ndarray
+        The x-coordinates of input data points.
+    y : np.ndarray
+        The y-coordinates of input data points.
+    z : np.ndarray
+        The z-values at each (x, y) coordinate.
+    xmax : int, optional
+        Maximum value along the x-axis used to define the interpolation grid.
+        If None, the max value from x is used.
+    ymax : int, optional
+        Maximum value along the y-axis used to define the interpolation grid.
+        If None, the max value from y is used.
+    smoothness : int, default=1
+        Amount of smoothing applied during fitting.
+    extend : str, default="warning"
+        Determines how to handle extrapolation outside data boundaries.
+        Possible values include "warning", "fill", etc. (see GridFit docs).
+    interp : str, default="triangle"
+        Type of interpolation to apply (e.g., "triangle", "bilinear").
+    regularizer : str, default="gradient"
+        Regularization method used in the solver (e.g., "gradient", "laplacian").
+    solver : str, default="normal"
+        Solver backend (e.g., "normal" for normal equations).
+    maxiter : int, optional
+        Maximum number of solver iterations. If None, defaults to solver-based value.
+    autoscale : str, default="on"
+        Autoscaling setting for the solver.
+    xscale : float, default=1.0
+        Additional scaling factor applied to the x-dimension during fitting.
+    yscale : float, default=1.0
+        Additional scaling factor applied to the y-dimension during fitting.
+
+    Returns
+    -------
+    zmesh : np.ndarray
+        2D array of interpolated z-values over the fitted surface.
+    xmesh : np.ndarray
+        2D array of x-coordinates corresponding to zmesh.
+    ymesh : np.ndarray
+        2D array of y-coordinates corresponding to zmesh.
+    """
     if xmax is None:
         xmax = np.max(x).astype(float)
     if ymax is None:
@@ -59,17 +109,47 @@ def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray,
     return zmesh, xmesh, ymesh
 
 def resample_zgrid(
-    xnodes,    # 1D array of x-coordinates, length nx
-    ynodes,    # 1D array of y-coordinates, length ny
-    zgrid,     # shape (ny, nx), as if from np.meshgrid(xnodes, ynodes, indexing='xy')
-    xMax, yMax
-):
+    xnodes: np.ndarray,
+    ynodes: np.ndarray,
+    zgrid: np.ndarray,
+    xMax: int,
+    yMax: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Replicate something like:
-      [xi, yi] = meshgrid(1:xMax, 1:yMax); 
-      xi=xi'; yi=yi';
-      vzmesh=interp2(xgrid,ygrid,zgrid, xi, yi, '*linear', fillval)
-    using RegularGridInterpolator with method='linear'.
+    Resamples a 2D grid (zgrid) at integer coordinates up to xMax and yMax.
+    Uses a linear RegularGridInterpolator under the hood.
+
+    Parameters
+    ----------
+    xnodes : np.ndarray
+        Sorted 1D array of x-coordinates defining the original grid.
+    ynodes : np.ndarray
+        Sorted 1D array of y-coordinates defining the original grid.
+    zgrid : np.ndarray
+        2D array of shape (len(ynodes), len(xnodes)), representing z-values
+        on a regular grid with axes (y, x).
+    xMax : int
+        The maximum x-coordinate (inclusive) for the resampling.
+    yMax : int
+        The maximum y-coordinate (inclusive) for the resampling.
+
+    Returns
+    -------
+    vzmesh : np.ndarray
+        2D array of shape (xMax, yMax), containing interpolated z-values at
+        integer (x, y) positions.
+    xi : np.ndarray
+        2D array of shape (xMax, yMax), representing the x-coordinates used for
+        interpolation.
+    yi : np.ndarray
+        2D array of shape (xMax, yMax), representing the y-coordinates used for
+        interpolation.
+
+    Notes
+    -----
+    In Python, arrays are typically indexed as (row, column) which maps to
+    (y, x) in a 2D sense. This function transposes the meshgrid from
+    `np.meshgrid(..., indexing='xy')` to match the MATLAB style of indexing.
     """
 
     # 0) Check that xMax, yMax are integers.
@@ -112,11 +192,36 @@ def resample_zgrid(
     return vzmesh, xi, yi
 
 
-def calculate_diag_length(xpos, ypos, VZmesh):
+def calculate_diag_length(    
+    xpos: np.ndarray,
+    ypos: np.ndarray,
+    VZmesh: np.ndarray
+) -> tuple[float, float]:
     """
-    A closer match to the original MATLAB code using RegularGridInterpolator
-    for xKnots, yKnots (instead of RectBivariateSpline) 
-    and for zKnots (instead of griddata).
+    Computes the 3D length along the main diagonal and skew diagonal of the
+    surface given by VZmesh, where xpos and ypos define the coordinate axes.
+
+    Parameters
+    ----------
+    xpos : np.ndarray
+        1D array of x-coordinates (length M).
+    ypos : np.ndarray
+        1D array of y-coordinates (length N).
+    VZmesh : np.ndarray
+        2D array of shape (M, N), representing z-values at the grid points
+        formed by xpos and ypos.
+
+    Returns
+    -------
+    main_diag_dist : float
+        The summed 3D distance along the main diagonal of the surface.
+    skew_diag_dist : float
+        The summed 3D distance along the skew (reverse) diagonal of the surface.
+
+    Notes
+    -----
+    The function interpolates coordinates along whichever dimension is larger,
+    then sums Euclidean distances in 3D for each diagonal path.
     """
     M, N = VZmesh.shape  # M = len(xpos), N = len(ypos)
 
@@ -197,7 +302,35 @@ def calculate_diag_length(xpos, ypos, VZmesh):
     return main_diag_dist, skew_diag_dist
 
 
-def assign_local_coordinates(triangle):
+def assign_local_coordinates(triangle: np.ndarray) -> tuple[complex, complex, complex, float]:
+    """
+    Assigns local complex coordinates (w1, w2, w3) to the three vertices of a
+    triangle in 3D space, used for conformal mapping calculations.
+
+    Parameters
+    ----------
+    triangle : np.ndarray
+        Array of shape (3, 3), where each row corresponds to a vertex in (x, y, z).
+        The three vertices define one triangular face.
+
+    Returns
+    -------
+    w1 : complex
+        Complex representation of the local coordinate for vertex 1.
+    w2 : complex
+        Complex representation of the local coordinate for vertex 2.
+    w3 : complex
+        Complex representation of the local coordinate for vertex 3.
+    zeta : float
+        A normalization factor based on the triangle’s geometry, typically used
+        to scale further computations (e.g., for quasi-conformal maps).
+
+    Notes
+    -----
+    Each vertex is measured relative to the first vertex, establishing a local
+    coordinate system. The calculations ensure an appropriate scale and orientation
+    for the subsequent mapping steps.
+    """    
     d12 = np.linalg.norm(triangle[0] - triangle[1])
     d13 = np.linalg.norm(triangle[0] - triangle[2])
     d23 = np.linalg.norm(triangle[1] - triangle[2])
@@ -209,7 +342,44 @@ def assign_local_coordinates(triangle):
     zeta = np.abs(np.real(1j * (np.conj(w2) * w1 - np.conj(w1) * w2)))
     return w1, w2, w3, zeta
 
-def conformal_map_indep_fixed_diagonals(mainDiagDist, skewDiagDist, xpos, ypos, VZmesh):
+def conformal_map_indep_fixed_diagonals(
+    mainDiagDist: float,
+    skewDiagDist: float,
+    xpos: np.ndarray,
+    ypos: np.ndarray,
+    VZmesh: np.ndarray
+) -> np.ndarray:
+    """
+    Creates a quasi-conformal 2D mapping of the surface in VZmesh. 
+    Diagonal constraints are fixed using mainDiagDist and skewDiagDist 
+    for consistent scaling.
+
+    Parameters
+    ----------
+    mainDiagDist : float
+        Target distance along the main diagonal for the mapped surface.
+    skewDiagDist : float
+        Target distance along the skew (reverse) diagonal for the mapped surface.
+    xpos : np.ndarray
+        1D array of x-coordinates (length M).
+    ypos : np.ndarray
+        1D array of y-coordinates (length N).
+    VZmesh : np.ndarray
+        2D array of shape (M, N), representing z-values for each (x, y).
+
+    Returns
+    -------
+    mappedPositions : np.ndarray
+        2D array of shape (M*N, 2). Each row corresponds to the (x, y) position
+        in the conformal map for the corresponding vertex in the original mesh.
+
+    Notes
+    -----
+    The mapping is generated by splitting each cell of the grid into two triangles,
+    constructing a sparse system to enforce approximate conformality, and then
+    solving for new vertex positions subject to diagonally fixed boundaries.
+    The final 2D layout merges two separate diagonal constraints.
+    """    
     M, N = VZmesh.shape
     xpos_new = xpos + 1
     ypos_new = ypos + 1
@@ -300,14 +470,53 @@ def conformal_map_indep_fixed_diagonals(mainDiagDist, skewDiagDist, xpos, ypos, 
     mappedPositions = (mapped_main + mapped_skew) / 2
     return mappedPositions
 
-def align_mapped_surface(thisVZminmesh, thisVZmaxmesh,
-                         mappedMinPositions, mappedMaxPositions,
-                         xborders, yborders, conformal_jump=1, patch_size=21):
+def align_mapped_surface(    
+    thisVZminmesh: np.ndarray,
+    thisVZmaxmesh: np.ndarray,
+    mappedMinPositions: np.ndarray,
+    mappedMaxPositions: np.ndarray,
+    xborders: list[int],
+    yborders: list[int],
+    conformal_jump: int = 1,
+    patch_size: int = 21
+) -> np.ndarray:
     """
-    Aligns mappedMaxPositions to mappedMinPositions by minimizing difference in slope
-    between VZminmesh and VZmaxmesh over a local region.
-    """
+    Shifts the second mapped surface (mappedMaxPositions) so that its local
+    gradients align best with those of the first (mappedMinPositions).
 
+    Parameters
+    ----------
+    thisVZminmesh : np.ndarray
+        2D array of shape (X, Y), representing the first (minimum) surface.
+    thisVZmaxmesh : np.ndarray
+        2D array of shape (X, Y), representing the second (maximum) surface.
+    mappedMinPositions : np.ndarray
+        2D array of shape (X*Y, 2), the conformally mapped coordinates 
+        corresponding to the min surface.
+    mappedMaxPositions : np.ndarray
+        2D array of shape (X*Y, 2), the conformally mapped coordinates 
+        corresponding to the max surface.
+    xborders : list of int
+        [x_min, x_max] bounding indices used to focus the alignment region.
+    yborders : list of int
+        [y_min, y_max] bounding indices used to focus the alignment region.
+    conformal_jump : int, default=1
+        Subsampling step in x and y dimensions for alignment calculations.
+    patch_size : int, default=21
+        Size of the local 2D window used for minimizing gradient differences.
+
+    Returns
+    -------
+    mappedMaxPositions : np.ndarray
+        Updated 2D array of shape (X*Y, 2) for the max surface, 
+        after alignment to the min surface.
+
+    Notes
+    -----
+    This step finds an offset (shift in x and y) that best aligns local slope
+    features from the two surfaces, by comparing gradients in a restricted region 
+    and choosing the position with minimal combined gradient magnitude.
+    """
     patch_size = int(np.ceil(patch_size / conformal_jump))
 
     # Pad surfaces to preserve shape after differencing
@@ -368,8 +577,64 @@ def align_mapped_surface(thisVZminmesh, thisVZmaxmesh,
     return mappedMaxPositions
 
 
-def warp_surface(thisvzminmesh, thisvzmaxmesh, arbor_boundaries, conformal_jump = 1, verbose=False):
+def warp_surface(
+    thisvzminmesh: np.ndarray,
+    thisvzmaxmesh: np.ndarray,
+    arbor_boundaries: tuple[int, int, int, int],
+    conformal_jump: int = 1,
+    verbose: bool = False
+) -> dict:
+    """
+    Generates a conformal warp of two Starburst Amacrine Cell (SAC) surfaces 
+    (min and max) and aligns them. This function is a higher-level wrapper 
+    that uses diagonal distance calculations, conformal mapping, and alignment.
 
+    Parameters
+    ----------
+    thisvzminmesh : np.ndarray
+        2D array of shape (X, Y), representing the “minimum” / ON SAC surface.
+    thisvzmaxmesh : np.ndarray
+        2D array of shape (X, Y), representing the “maximum” / OFF SAC surface.
+    arbor_boundaries : tuple of int
+        (xmin, xmax, ymin, ymax) specifying the region of interest 
+        over which to warp the surfaces.
+    conformal_jump : int, default=1
+        Subsampling step for reducing the resolution during mapping 
+        (e.g., conformal_jump=2 uses every other pixel).
+    verbose : bool, default=False
+        Whether to print timing and debug information.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+        - "mapped_min_positions": np.ndarray
+            Mapped coordinates for the min surface.
+        - "mapped_max_positions": np.ndarray
+            Mapped coordinates for the max surface (aligned to min).
+        - "main_diag_dist": float
+            Average main diagonal distance used during conformal mapping.
+        - "skew_diag_dist": float
+            Average skew diagonal distance used during conformal mapping.
+        - "thisx": np.ndarray
+            Subsampled x indices used for mapping.
+        - "thisy": np.ndarray
+            Subsampled y indices used for mapping.
+        - "thisVZminmesh": np.ndarray
+            Original min surface data used in mapping (subsampled).
+        - "thisVZmaxmesh": np.ndarray
+            Original max surface data used in mapping (subsampled).
+
+    Notes
+    -----
+    This routine is tailored to Starburst Amacrine Cell layers but can be 
+    generalized to other layered surfaces. It:
+    1. Subsamples the surfaces by conformal_jump.
+    2. Calculates average diagonal distances from each surface.
+    3. Performs two independent conformal mappings (min and max).
+    4. Aligns the “max” mapping to “min” based on local gradient differences.
+    5. Returns a dictionary of intermediate results for further inspection.
+    """
     if verbose:
         print("Warping surface...")
     xmin, xmax, ymin, ymax = arbor_boundaries
