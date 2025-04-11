@@ -17,7 +17,7 @@ except ImportError:
 
 
 def fit_surface(x: np.ndarray, y: np.ndarray, z: np.ndarray, 
-                xmax: int|None = None, ymax: int|None = None,
+                xmax: Optional[int] = None, ymax: Optional[int] = None,
                 smoothness: int = 1,
                 extend: str = "warning",
                 interp: str = "triangle",
