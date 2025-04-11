@@ -4,12 +4,20 @@
 
 ## Installation
 
+To install the latest tagged version:
+
+```bash
+pip install pywarper
+```
+
+Or to install the development version, clone the repository and install it with `pip install -e`:
+
 ```bash
 git clone https://github.com/berenslab/pywarper.git
 pip install -e pywarper
 ```
 
-By default, `pywarper` uses `scipy.sparse.linalg.spsolve` to solve sparse matrices, which can be slow. For faster performance, you can manually install [scikit-sparse](https://github.com/scikit-sparse/scikit-sparse), as it requires additional dependencies:
+By default, `pywarper` uses `scipy.sparse.linalg.spsolve` to solve sparse matrices, which can be slow. For better performance, you can manually install the additional dependencies of [scikit-sparse](https://github.com/scikit-sparse/scikit-sparse) first:
 
 ```bash
 # mac
@@ -17,8 +25,12 @@ brew install suite-sparse
 
 # debian
 sudo apt-get install libsuitesparse-dev
+```
 
-pip install -e pywarper[scikit-sparse]
+then:
+
+```bash
+pip install pywarper[scikit-sparse]
 ```
 
 ## Usage
