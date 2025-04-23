@@ -1,4 +1,5 @@
 import time
+from typing import Union
 
 import numpy as np
 from numpy.linalg import lstsq
@@ -140,6 +141,7 @@ def warp_arbor(
     edges: np.ndarray,
     radii: np.ndarray,
     surface_mapping: dict,
+    voxel_resolution: Union[float, list] = [1., 1., 1.],
     conformal_jump: int = 1,
     verbose: bool = False
 ) -> dict:
@@ -272,7 +274,7 @@ def warp_arbor(
 
     # Build output dictionary
     warped_arbor = {
-        'nodes': warped_nodes,
+        'nodes': warped_nodes * voxel_resolution,
         'edges': edges,
         'radii': radii,
         'medVZmin': med_VZmin,

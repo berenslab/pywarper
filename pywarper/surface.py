@@ -580,7 +580,7 @@ def align_mapped_surface(
 def warp_surface(
     thisvzminmesh: np.ndarray,
     thisvzmaxmesh: np.ndarray,
-    arbor_boundaries: tuple[int, int, int, int],
+    arbor_boundaries: np.ndarray,
     conformal_jump: int = 1,
     verbose: bool = False
 ) -> dict:
