@@ -3,6 +3,7 @@ from typing import Union
 
 import numpy as np
 from numpy.linalg import lstsq
+from scipy.special import i0
 
 
 def local_ls_registration(
@@ -282,3 +283,182 @@ def warp_arbor(
     }
 
     return warped_arbor
+
+
+# =====================================================================
+# helpers for get_zprofile()
+# =====================================================================
+
+def segment_lengths(
+    nodes: np.ndarray,
+    edges: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Edge length at each child node and the corresponding mid-point.
+
+    `edges` are the raw SWC child/parent pairs *1-based*.
+    """
+
+    # check if soma is first node
+    if edges[0, 1] == -1:
+        # remove soma from edges
+        edges = edges[1:]
+
+    child = edges[:, 0].astype(int) - 1     # → 0-based
+    parent = edges[:, 1].astype(int) - 1
+
+    density = np.zeros(nodes.shape[0], dtype=float)
+    mid     = nodes.copy()
+
+    vec      = nodes[parent] - nodes[child]
+    seg_len  = np.linalg.norm(vec, axis=1)
+
+    density[child]  = seg_len
+    mid[child]      = nodes[child] + 0.5 * vec
+
+    return density, mid
+
+def gridder1d(
+    z_samples: np.ndarray,
+    density:   np.ndarray,
+    n: int,
+) -> np.ndarray:
+    """
+    Kaiser–Bessel gridding kernel in 1-D   (α=2, W=5 as in the paper)
+
+    Port of Uygar Sümbül’s MATLAB `gridder1d`
+    All comments match the original line-for-line.
+    """
+    if z_samples.shape != density.shape:
+        raise ValueError("z_samples and density must have the same shape")
+
+    # ------------------------------------------------------------------
+    # Constants
+    # ------------------------------------------------------------------
+    alpha, W, err = 2, 5, 1e-3
+    S    = int(np.ceil(0.91 / err / alpha))
+    beta = np.pi * np.sqrt((W / alpha * (alpha - 0.5))**2 - 0.8)
+
+    # ------------------------------------------------------------------
+    # Pre-computed Kaiser–Bessel lookup table (LUT)
+    # ------------------------------------------------------------------
+    s      = np.linspace(-1, 1, 2 * S * W + 1)
+    F_kbZ  = i0(beta * np.sqrt(1 - s**2))
+    F_kbZ /= F_kbZ.max()
+
+    # ------------------------------------------------------------------
+    # Fourier transform of the 1-D kernel
+    # ------------------------------------------------------------------
+    Gz   = alpha * n
+    z    = np.arange(-Gz // 2, Gz // 2)
+    arg  = (np.pi * W * z / Gz)**2 - beta**2
+
+    kbZ  = np.empty_like(arg, dtype=float)
+    pos, neg = arg > 1e-12, arg < -1e-12
+    kbZ[pos] = np.sin(np.sqrt(arg[pos]))    / np.sqrt(arg[pos])
+    kbZ[neg] = np.sinh(np.sqrt(-arg[neg]))  / np.sqrt(-arg[neg])
+    kbZ[~(pos | neg)] = 1.0
+    kbZ *= np.sqrt(Gz)
+
+    # ------------------------------------------------------------------
+    # Oversampled grid and accumulation
+    # ------------------------------------------------------------------
+    n_os = Gz
+    out  = np.zeros(n_os, dtype=float)
+
+    centre = n_os / 2 + 1                   # 1-based like MATLAB
+    nz     = centre + n_os * z_samples      # fractional indices
+
+    half_w = (W - 1) // 2
+    for lz in range(-half_w, half_w + 1):
+        nzt = np.round(nz + lz).astype(int)
+        zpos = S * ((nz - nzt) + W / 2)
+        kw   = F_kbZ[np.round(zpos).astype(int)]
+
+        nzt = np.clip(nzt, 0, n_os - 1)     # clamp out-of-range
+        np.add.at(out, nzt, density * kw)
+
+    out[0] = out[-1] = 0.0                  # edge artefacts
+
+    # ------------------------------------------------------------------
+    # myifft  →  de-apodise  →  abs(myfft3)
+    # ------------------------------------------------------------------
+    u = n
+    f  = np.fft.ifftshift(np.fft.ifft(np.fft.ifftshift(out))) * np.sqrt(u)
+    f  = f[int(np.ceil((f.size - u) / 2)) : int(np.ceil((f.size + u) / 2))]
+
+    f /= kbZ[u // 2 : 3 * u // 2]           # de-apodisation
+
+    F  = np.fft.fftshift(np.fft.fftn(np.fft.fftshift(f))) / np.sqrt(f.size)
+    return np.abs(F)
+
+# =====================================================================
+# helpers for get_zprofile() END
+# =====================================================================
+
+def get_zprofile(
+    warped_arbor: dict,
+    z_res: float = 1.,
+    grid_point_count: int = 120,
+    z_ext: float = 5.,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute a 1-D depth profile (length per z-bin) from a warped arbor.
+
+    Parameters
+    ----------
+    warped_arbor
+        Dict returned by ``warp_arbor()``. Must contain
+            'nodes'   – (N, 3) xyz coordinates in µm,
+            'edges'   – (E, 2) SWC child/parent pairs (1-based),
+            'medVZmin', 'medVZmax'  – median of the ON and OFF SAC surfaces.
+    z_res
+        Spatial resolution along z (µm / voxel) *after* warping. Depends on
+        what unit the medvzmin/max were in. If they were already in µm, 
+        then z_res = 1. If they were in pixels, then z_res = voxel_size.
+    grid_point_count
+        Number of evenly-spaced output bins along z.
+    z_ext
+        Depth range (in “SAC units”) that was mapped to the unit interval
+        during warping; see Sumbul et al. 2014 for details.
+
+    Returns
+    -------
+    x_um
+        Bin centres in micrometres (depth in IPL).
+    z_dist
+        Dendritic length contained in each bin (same units as input nodes).
+    """
+    # ------------------------------------------------------------------
+    # 1.  Edge lengths and mid-points  ---------------------------------
+    # ------------------------------------------------------------------
+    density, mid_nodes = segment_lengths(
+        warped_arbor["nodes"], warped_arbor["edges"]
+    )
+
+    # ------------------------------------------------------------------
+    # 2.  Normalise z to [-0.5, +0.5] for the gridding kernel ----------
+    # ------------------------------------------------------------------
+    vz_min, vz_max = warped_arbor["medVZmin"], warped_arbor["medVZmax"]
+    z_samples = (
+        (mid_nodes[:, 2] / z_res - vz_min) / (vz_max - vz_min) / z_ext
+    )
+
+    # ------------------------------------------------------------------
+    # 3.  Non-uniform → uniform resampling (Kaiser–Bessel gridding) ----
+    # ------------------------------------------------------------------
+    z_dist = gridder1d(z_samples, density, grid_point_count)
+
+    # ------------------------------------------------------------------
+    # 4.  Re-scale so that Σ z_dist · z_res  equals total dendritic len.
+    # ------------------------------------------------------------------
+    z_dist *= density.sum() / (z_dist.sum() * z_res)
+
+    # ------------------------------------------------------------------
+    # 5.  Bin centres on a metric x-axis (µm) for plotting -------------
+    # ------------------------------------------------------------------
+    dz = z_ext / grid_point_count
+    bins = -z_ext / 2 + np.arange(grid_point_count) * dz
+    x_um = bins * (grid_point_count * z_res / z_ext)
+
+    return x_um, z_dist
