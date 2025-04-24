@@ -401,7 +401,7 @@ def get_zprofile(
     z_res: float = 1.,
     grid_point_count: int = 120,
     z_ext: float = 5.,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped arbor.
 
@@ -428,6 +428,8 @@ def get_zprofile(
         Bin centres in micrometres (depth in IPL).
     z_dist
         Dendritic length contained in each bin (same units as input nodes).
+    z_hist
+        Histogram-based Dendritic length (same units as input nodes).
     """
     # ------------------------------------------------------------------
     # 1.  Edge lengths and mid-points  ---------------------------------
@@ -437,28 +439,39 @@ def get_zprofile(
     )
 
     # ------------------------------------------------------------------
-    # 2.  Normalise z to [-0.5, +0.5] for the gridding kernel ----------
+    # 2.  Normalise z for the gridding kernel --------------------------
     # ------------------------------------------------------------------
     vz_min, vz_max = warped_arbor["medVZmin"], warped_arbor["medVZmax"]
-    z_samples = (
-        (mid_nodes[:, 2] / z_res - vz_min) / (vz_max - vz_min) / z_ext
-    )
+    z_samples = (mid_nodes[:, 2] / z_res - vz_min) / (vz_max - vz_min)
 
     # ------------------------------------------------------------------
     # 3.  Non-uniform → uniform resampling (Kaiser–Bessel gridding) ----
     # ------------------------------------------------------------------
-    z_dist = gridder1d(z_samples, density, grid_point_count)
+    z_dist = gridder1d(z_samples / z_ext, density, grid_point_count)
+    z_dist *= density.sum() / (z_dist.sum() * z_res)
 
     # ------------------------------------------------------------------
-    # 4.  Re-scale so that Σ z_dist · z_res  equals total dendritic len.
+    # 4.  Histogram-based z profile  -----------------------------------
     # ------------------------------------------------------------------
-    z_dist *= density.sum() / (z_dist.sum() * z_res)
+    bins_sac  = np.linspace(-z_ext / 2, +z_ext / 2, grid_point_count + 1)
+    z_hist, _ = np.histogram(z_samples, bins=bins_sac, weights=density)
+    z_hist *= density.sum() / (z_hist.sum() * z_res)     # same normalisation
 
     # ------------------------------------------------------------------
     # 5.  Bin centres on a metric x-axis (µm) for plotting -------------
     # ------------------------------------------------------------------
     dz = z_ext / grid_point_count
     bins = -z_ext / 2 + np.arange(grid_point_count) * dz
-    x_um = bins * (grid_point_count * z_res / z_ext)
+    x_um = bins * grid_point_count * z_res / z_ext
 
-    return x_um, z_dist
+    # ------------------------------------------------------------------
+    # 6.  Normed arbor -------------------------------------------------
+    # ------------------------------------------------------------------
+    z_on  = vz_min * z_res
+    z_off = vz_max * z_res
+    scale = grid_point_count * z_res / z_ext / (z_off - z_on)
+    nodes_norm = warped_arbor["nodes"].copy()
+    nodes_norm[:, 2] = (nodes_norm[:, 2] - z_on) * scale
+    normed_arbor = {**warped_arbor, "nodes": nodes_norm}
+
+    return x_um, z_dist, z_hist, normed_arbor
