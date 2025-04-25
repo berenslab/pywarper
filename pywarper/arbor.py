@@ -1,5 +1,5 @@
 import time
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 from numpy.linalg import lstsq
@@ -399,7 +399,7 @@ def gridder1d(
 def get_zprofile(
     warped_arbor: dict,
     z_res: float = 1.0,          
-    z_window: list[float] | None = None,
+    z_window: Optional[list[float]] = None,
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0, 
     grid_point_count: int = 120, 

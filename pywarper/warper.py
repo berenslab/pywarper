@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Union
 
 import numpy as np
 import pandas as pd
@@ -27,8 +27,8 @@ class Warper:
 
     def __init__(
         self,
-        off_sac: dict[str, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray],
-        on_sac: dict[str, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray],
+        off_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]],
+        on_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]],
         swc_path: str,
         *,
         smoothness: int = 15,
