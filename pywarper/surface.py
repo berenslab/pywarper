@@ -635,8 +635,7 @@ def warp_surface(
     4. Aligns the “max” mapping to “min” based on local gradient differences.
     5. Returns a dictionary of intermediate results for further inspection.
     """
-    if verbose:
-        print("Warping surface...")
+
     xmin, xmax, ymin, ymax = arbor_boundaries
 
     thisx = np.round(np.arange(np.maximum(xmin-2, 0), np.minimum(xmax+1, thisvzmaxmesh.shape[0]), conformal_jump)).astype(int)

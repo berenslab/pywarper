@@ -398,9 +398,11 @@ def gridder1d(
 
 def get_zprofile(
     warped_arbor: dict,
-    z_res: float = 1.,
-    grid_point_count: int = 120,
-    z_ext: float = 5.,
+    z_res: float = 1.0,          
+    z_window: list[float] | None = None,
+    on_sac_pos: float = 0.0,
+    off_sac_pos: float = 12.0, 
+    grid_point_count: int = 120, 
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped arbor.
@@ -416,11 +418,18 @@ def get_zprofile(
         Spatial resolution along z (µm / voxel) *after* warping. Depends on
         what unit the medvzmin/max were in. If they were already in µm, 
         then z_res = 1. If they were in pixels, then z_res = voxel_size.
+    z_window
+        Two floats ``[z_min, z_max]`` that define *one* common physical
+        span (µm) for **all** cells *after* the ON/OFF anchoring.
+        •  Default ``None`` means “just enough to cover the deepest /
+           shallowest point of *this* cell” (original behaviour).  
+        •  Example  ``z_window = (-6.0, 18.0)``  keeps a 6-µm margin on
+           both sides of the SAC band while still centring it at 0–12 µm.
+    on_sac_pos, off_sac_pos
+        Desired positions of the starburst layers in the *final* profile
+        (µm).  Defaults reproduce the numbers quoted in Sümbül et al. 2014.
     grid_point_count
         Number of evenly-spaced output bins along z.
-    z_ext
-        Depth range (in “SAC units”) that was mapped to the unit interval
-        during warping; see Sumbul et al. 2014 for details.
 
     Returns
     -------
@@ -430,48 +439,53 @@ def get_zprofile(
         Dendritic length contained in each bin (same units as input nodes).
     z_hist
         Histogram-based Dendritic length (same units as input nodes).
+    normed_arbor
+        copy of the input arbor whose z-coordinates have
+                    already been rescaled to the requested frame
     """
-    # ------------------------------------------------------------------
-    # 1.  Edge lengths and mid-points  ---------------------------------
-    # ------------------------------------------------------------------
-    density, mid_nodes = segment_lengths(
-        warped_arbor["nodes"], warped_arbor["edges"]
-    )
 
-    # ------------------------------------------------------------------
-    # 2.  Normalise z for the gridding kernel --------------------------
-    # ------------------------------------------------------------------
-    vz_min, vz_max = warped_arbor["medVZmin"], warped_arbor["medVZmax"]
-    z_samples = (mid_nodes[:, 2] / z_res - vz_min) / (vz_max - vz_min)
+    # 0) decide the common span
+    dz_onoff   = off_sac_pos - on_sac_pos          # 12 µm by default
+    if z_window is None:
+        z_min, z_max = None, None                  # auto-span
+    else:
+        z_min, z_max = z_window                    # user-fixed span
 
-    # ------------------------------------------------------------------
-    # 3.  Non-uniform → uniform resampling (Kaiser–Bessel gridding) ----
-    # ------------------------------------------------------------------
-    z_dist = gridder1d(z_samples / z_ext, density, grid_point_count)
-    z_dist *= density.sum() / (z_dist.sum() * z_res)
+    # 1) edge lengths and mid-point nodes   
+    density, nodes = segment_lengths(warped_arbor["nodes"],
+                                    warped_arbor["edges"])
 
-    # ------------------------------------------------------------------
-    # 4.  Histogram-based z profile  -----------------------------------
-    # ------------------------------------------------------------------
-    bins_sac  = np.linspace(-z_ext / 2, +z_ext / 2, grid_point_count + 1)
-    z_hist, _ = np.histogram(z_samples, bins=bins_sac, weights=density)
-    z_hist *= density.sum() / (z_hist.sum() * z_res)     # same normalisation
+    vz_on, vz_off = warped_arbor["medVZmin"], warped_arbor["medVZmax"]
+    rel_depth     = (nodes[:, 2] / z_res - vz_on) / (vz_off - vz_on)  # 0→ON, 1→OFF
+    z_phys        = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
 
-    # ------------------------------------------------------------------
-    # 5.  Bin centres on a metric x-axis (µm) for plotting -------------
-    # ------------------------------------------------------------------
-    dz = z_ext / grid_point_count
-    bins = -z_ext / 2 + np.arange(grid_point_count) * dz
-    x_um = bins * grid_point_count * z_res / z_ext
 
-    # ------------------------------------------------------------------
-    # 6.  Normed arbor -------------------------------------------------
-    # ------------------------------------------------------------------
-    z_on  = vz_min * z_res
-    z_off = vz_max * z_res
-    scale = grid_point_count * z_res / z_ext / (z_off - z_on)
+    # 2) decide bin edges *once*
+    if z_min is None or z_max is None:
+        # grow just enough to contain this cell, then round to one bin
+        z_min = np.floor(z_phys.min() / dz_onoff * grid_point_count) * dz_onoff / grid_point_count
+        z_max = np.ceil (z_phys.max() / dz_onoff * grid_point_count) * dz_onoff / grid_point_count
+
+    bin_edges = np.linspace(z_min, z_max, grid_point_count + 1)
+
+    # 3) histogram-based z profile
+    z_hist, _ = np.histogram(z_phys, bins=bin_edges, weights=density)
+    z_hist   *= density.sum() / (z_hist.sum() * z_res)
+
+
+    # 4) Kaiser–Bessel gridded version (needs centred –0.5…0.5 inputs) 
+    centre   = (z_min + z_max) / 2
+    halfspan = (z_max - z_min) / 2
+    z_samples = (z_phys - centre) / halfspan # now in [-1, 1]
+
+    z_dist    = gridder1d(z_samples / 2, density, grid_point_count)  # /2 → [-0.5, 0.5]
+    z_dist   *= density.sum() / (z_dist.sum() * z_res)
+
+    # 5) bin centres & rescaled arbor
+    x_um  = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
+
     nodes_norm = warped_arbor["nodes"].copy()
-    nodes_norm[:, 2] = (nodes_norm[:, 2] - z_on) * scale
+    nodes_norm[:, 2] = z_phys
     normed_arbor = {**warped_arbor, "nodes": nodes_norm}
 
     return x_um, z_dist, z_hist, normed_arbor
