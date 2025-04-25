@@ -35,4 +35,4 @@ pip install pywarper[scikit-sparse]
 
 ## Usage
 
-See the [example](https://github.com/berenslab/pywarper/blob/main/notebooks/example.ipynb) notebook for usage. 
+See [example notebooks](https://github.com/berenslab/pywarper/blob/main/notebooks/) for usage. 
