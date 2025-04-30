@@ -3,6 +3,7 @@ from typing import Optional, Union
 
 import numpy as np
 from numpy.linalg import lstsq
+from scipy.ndimage import gaussian_filter
 from scipy.special import i0
 
 
@@ -308,13 +309,13 @@ def segment_lengths(
     parent = edges[:, 1].astype(int) - 1
 
     density = np.zeros(nodes.shape[0], dtype=float)
-    mid     = nodes.copy()
+    mid = nodes.copy()
 
-    vec      = nodes[parent] - nodes[child]
-    seg_len  = np.linalg.norm(vec, axis=1)
+    vec = nodes[parent] - nodes[child]
+    seg_len = np.linalg.norm(vec, axis=1)
 
-    density[child]  = seg_len
-    mid[child]      = nodes[child] + 0.5 * vec
+    density[child] = seg_len
+    mid[child] = nodes[child] + 0.5 * vec
 
     return density, mid
 
@@ -336,27 +337,27 @@ def gridder1d(
     # Constants
     # ------------------------------------------------------------------
     alpha, W, err = 2, 5, 1e-3
-    S    = int(np.ceil(0.91 / err / alpha))
+    S = int(np.ceil(0.91 / err / alpha))
     beta = np.pi * np.sqrt((W / alpha * (alpha - 0.5))**2 - 0.8)
 
     # ------------------------------------------------------------------
     # Pre-computed Kaiser–Bessel lookup table (LUT)
     # ------------------------------------------------------------------
-    s      = np.linspace(-1, 1, 2 * S * W + 1)
-    F_kbZ  = i0(beta * np.sqrt(1 - s**2))
+    s = np.linspace(-1, 1, 2 * S * W + 1)
+    F_kbZ = i0(beta * np.sqrt(1 - s**2))
     F_kbZ /= F_kbZ.max()
 
     # ------------------------------------------------------------------
     # Fourier transform of the 1-D kernel
     # ------------------------------------------------------------------
-    Gz   = alpha * n
-    z    = np.arange(-Gz // 2, Gz // 2)
-    arg  = (np.pi * W * z / Gz)**2 - beta**2
+    Gz = alpha * n
+    z = np.arange(-Gz // 2, Gz // 2)
+    arg = (np.pi * W * z / Gz)**2 - beta**2
 
-    kbZ  = np.empty_like(arg, dtype=float)
+    kbZ = np.empty_like(arg, dtype=float)
     pos, neg = arg > 1e-12, arg < -1e-12
-    kbZ[pos] = np.sin(np.sqrt(arg[pos]))    / np.sqrt(arg[pos])
-    kbZ[neg] = np.sinh(np.sqrt(-arg[neg]))  / np.sqrt(-arg[neg])
+    kbZ[pos] = np.sin(np.sqrt(arg[pos])) / np.sqrt(arg[pos])
+    kbZ[neg] = np.sinh(np.sqrt(-arg[neg])) / np.sqrt(-arg[neg])
     kbZ[~(pos | neg)] = 1.0
     kbZ *= np.sqrt(Gz)
 
@@ -367,13 +368,13 @@ def gridder1d(
     out  = np.zeros(n_os, dtype=float)
 
     centre = n_os / 2 + 1                   # 1-based like MATLAB
-    nz     = centre + n_os * z_samples      # fractional indices
+    nz = centre + n_os * z_samples      # fractional indices
 
     half_w = (W - 1) // 2
     for lz in range(-half_w, half_w + 1):
         nzt = np.round(nz + lz).astype(int)
         zpos = S * ((nz - nzt) + W / 2)
-        kw   = F_kbZ[np.round(zpos).astype(int)]
+        kw = F_kbZ[np.round(zpos).astype(int)]
 
         nzt = np.clip(nzt, 0, n_os - 1)     # clamp out-of-range
         np.add.at(out, nzt, density * kw)
@@ -384,12 +385,12 @@ def gridder1d(
     # myifft  →  de-apodise  →  abs(myfft3)
     # ------------------------------------------------------------------
     u = n
-    f  = np.fft.ifftshift(np.fft.ifft(np.fft.ifftshift(out))) * np.sqrt(u)
-    f  = f[int(np.ceil((f.size - u) / 2)) : int(np.ceil((f.size + u) / 2))]
+    f = np.fft.ifftshift(np.fft.ifft(np.fft.ifftshift(out))) * np.sqrt(u)
+    f = f[int(np.ceil((f.size - u) / 2)) : int(np.ceil((f.size + u) / 2))]
 
     f /= kbZ[u // 2 : 3 * u // 2]           # de-apodisation
 
-    F  = np.fft.fftshift(np.fft.fftn(np.fft.fftshift(f))) / np.sqrt(f.size)
+    F = np.fft.fftshift(np.fft.fftn(np.fft.fftshift(f))) / np.sqrt(f.size)
     return np.abs(F)
 
 # =====================================================================
@@ -402,7 +403,7 @@ def get_zprofile(
     z_window: Optional[list[float]] = None,
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0, 
-    grid_point_count: int = 120, 
+    nbins: int = 120, 
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped arbor.
@@ -428,7 +429,7 @@ def get_zprofile(
     on_sac_pos, off_sac_pos
         Desired positions of the starburst layers in the *final* profile
         (µm).  Defaults reproduce the numbers quoted in Sümbül et al. 2014.
-    grid_point_count
+    nbins
         Number of evenly-spaced output bins along z.
 
     Returns
@@ -445,7 +446,7 @@ def get_zprofile(
     """
 
     # 0) decide the common span
-    dz_onoff   = off_sac_pos - on_sac_pos          # 12 µm by default
+    dz_onoff = off_sac_pos - on_sac_pos          # 12 µm by default
     if z_window is None:
         z_min, z_max = None, None                  # auto-span
     else:
@@ -456,36 +457,95 @@ def get_zprofile(
                                     warped_arbor["edges"])
 
     vz_on, vz_off = warped_arbor["medVZmin"], warped_arbor["medVZmax"]
-    rel_depth     = (nodes[:, 2] / z_res - vz_on) / (vz_off - vz_on)  # 0→ON, 1→OFF
-    z_phys        = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
+    rel_depth = (nodes[:, 2] / z_res - vz_on) / (vz_off - vz_on)  # 0→ON, 1→OFF
+    z_phys = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
 
 
     # 2) decide bin edges *once*
     if z_min is None or z_max is None:
         # grow just enough to contain this cell, then round to one bin
-        z_min = np.floor(z_phys.min() / dz_onoff * grid_point_count) * dz_onoff / grid_point_count
-        z_max = np.ceil (z_phys.max() / dz_onoff * grid_point_count) * dz_onoff / grid_point_count
+        z_min = np.floor(z_phys.min() / dz_onoff * nbins) * dz_onoff / nbins
+        z_max = np.ceil (z_phys.max() / dz_onoff * nbins) * dz_onoff / nbins
 
-    bin_edges = np.linspace(z_min, z_max, grid_point_count + 1)
+    bin_edges = np.linspace(z_min, z_max, nbins + 1)
 
     # 3) histogram-based z profile
     z_hist, _ = np.histogram(z_phys, bins=bin_edges, weights=density)
-    z_hist   *= density.sum() / (z_hist.sum() * z_res)
+    z_hist *= density.sum() / (z_hist.sum() * z_res)
 
 
     # 4) Kaiser–Bessel gridded version (needs centred –0.5…0.5 inputs) 
-    centre   = (z_min + z_max) / 2
+    centre = (z_min + z_max) / 2
     halfspan = (z_max - z_min) / 2
     z_samples = (z_phys - centre) / halfspan # now in [-1, 1]
 
-    z_dist    = gridder1d(z_samples / 2, density, grid_point_count)  # /2 → [-0.5, 0.5]
-    z_dist   *= density.sum() / (z_dist.sum() * z_res)
+    z_dist = gridder1d(z_samples / 2, density, nbins)  # /2 → [-0.5, 0.5]
+    z_dist *= density.sum() / (z_dist.sum() * z_res)
 
     # 5) bin centres & rescaled arbor
-    x_um  = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
+    x_um = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
 
     nodes_norm = warped_arbor["nodes"].copy()
     nodes_norm[:, 2] = z_phys
     normed_arbor = {**warped_arbor, "nodes": nodes_norm}
 
     return x_um, z_dist, z_hist, normed_arbor
+
+def get_xyprofile(
+    warped_arbor: dict,
+    xy_window: Optional[list[float]] = None,
+    nbins: int = 20,
+    sigma_bins: float = 1.0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    2-D dendritic-length density on a fixed XY grid (no per-cell rotation).
+
+    Parameters
+    ----------
+    warped_arbor   
+        output of ``warp_arbor()`` (nodes in µm).
+    xy_window      
+        (xmin, xmax, ymin, ymax) in µm that *all* cells
+                     share.  If ``None`` use this arbor's tight bounding box.
+    nbins          
+        number of bins along X **and** Y (default 20).
+
+    Returns
+    -------
+    x_um:  (nbins,) µm 
+        bin centres along X
+    y_um: (nbins,) µm 
+        bin centres along Y
+    xy_dist: (nbins, nbins) µm  
+        smoothed dendritic length per bin
+    xy_hist: (nbins, nbins) µm
+        histogram-based dendritic length per bin
+    """
+
+    # 1) edge lengths and mid-points (same helper you already have)
+    density, mid = segment_lengths(warped_arbor["nodes"],
+                                   warped_arbor["edges"])
+
+    # 2) decide the common window
+    if xy_window is None:
+        xmin, xmax = mid[:, 0].min(), mid[:, 0].max()
+        ymin, ymax = mid[:, 1].min(), mid[:, 1].max()
+    else:
+        xmin, xmax, ymin, ymax = xy_window
+
+    # 3) 2-D histogram weighted by edge length and density
+    xy_hist, x_edges, y_edges = np.histogram2d(
+        mid[:, 0], mid[:, 1],
+        bins=[nbins, nbins],
+        range=[[xmin, xmax], [ymin, ymax]],
+        weights=density
+    )
+
+    xy_dist = gaussian_filter(xy_hist, sigma=sigma_bins, mode='nearest')
+    xy_dist *= density.sum() / xy_dist.sum()   # keep Σ = total length
+
+    # 5) bin centres for plotting
+    x = 0.5 * (x_edges[:-1] + x_edges[1:])
+    y = 0.5 * (y_edges[:-1] + y_edges[1:])
+
+    return x, y, xy_dist, xy_hist

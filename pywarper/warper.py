@@ -1,9 +1,9 @@
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
 
-from pywarper.arbor import get_zprofile, warp_arbor
+from pywarper.arbor import get_xyprofile, get_zprofile, warp_arbor
 from pywarper.surface import fit_surface, warp_surface
 from pywarper.utils import read_arbor_trace
 
@@ -31,13 +31,10 @@ class Warper:
         on_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]],
         swc_path: str,
         *,
-        smoothness: int = 15,
-        conformal_jump: int = 2,
         voxel_resolution: list[float] = [0.4, 0.4, 0.5],
         verbose: bool = False,
     ) -> None:
-        self.smoothness = smoothness
-        self.conformal_jump = conformal_jump
+
         self.voxel_resolution = voxel_resolution
         self.verbose = verbose
         self.swc_path = swc_path
@@ -52,21 +49,21 @@ class Warper:
     # ---------------------------------------------------------------------
     # public pipeline ------------------------------------------------------
     # ---------------------------------------------------------------------
-    def fit_surfaces(self) -> "Warper":
+    def fit_surfaces(self, smoothness: int = 15) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
             print("[Warper] Fitting OFF‑SAC surface …")
         self.vz_off, *_ = fit_surface(
-            x=self.off_sac[0], y=self.off_sac[1], z=self.off_sac[2], smoothness=self.smoothness
+            x=self.off_sac[0], y=self.off_sac[1], z=self.off_sac[2], smoothness=smoothness
         )
         if self.verbose:
             print("[Warper] Fitting ON‑SAC surface …")
         self.vz_on, *_ = fit_surface(
-            x=self.on_sac[0], y=self.on_sac[1], z=self.on_sac[2], smoothness=self.smoothness
+            x=self.on_sac[0], y=self.on_sac[1], z=self.on_sac[2], smoothness=smoothness
         )
         return self
 
-    def build_mapping(self) -> "Warper":
+    def build_mapping(self, conformal_jump: int = 2) -> "Warper":
         """Create the quasi‑conformal surface mapping."""
         if self.vz_off is None or self.vz_on is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
@@ -81,12 +78,12 @@ class Warper:
             self.vz_on,
             self.vz_off,
             bounds,
-            conformal_jump=self.conformal_jump,
+            conformal_jump=conformal_jump,
             verbose=self.verbose,
         )
         return self
 
-    def warp_arbor(self) -> "Warper":
+    def warp_arbor(self, conformal_jump: int = 2) -> "Warper":
         """Apply the mapping to the arbor."""
         if self.mapping is None:
             raise RuntimeError("Mapping missing. Call build_mapping() first.")
@@ -98,21 +95,37 @@ class Warper:
             self.radii,
             self.mapping,
             voxel_resolution=self.voxel_resolution,
-            conformal_jump=self.conformal_jump,
+            conformal_jump=conformal_jump,
             verbose=self.verbose,
         )
         return self
 
     # convenience helpers --------------------------------------------------
-    def get_arbor_denstiy(self, z_res: float = 0.5, z_window: list[float] = [-30, 30]) -> "Warper":
+    def get_arbor_denstiy(
+            self, 
+            z_res: float = 0.5, 
+            z_window: list[float] = [-30, 30],
+            z_nbins: int = 120,
+            xy_window: Optional[list[float]] = None,
+            xy_nbins: int = 20,
+            xy_sigma_bins: float = 1.
+    ) -> "Warper":
         """Return depth profile as in *get_zprofile*."""
         if self.warped_arbor is None:
             raise RuntimeError("Arbor not warped yet. Call warp().")
-        x, z_dist, z_hist, normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window)
-        self.x: np.ndarray = x
+        z_x, z_dist, z_hist, normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window)
+        self.z_x: np.ndarray = z_x
         self.z_dist: np.ndarray = z_dist
         self.z_hist: np.ndarray = z_hist
         self.normed_arbor: dict = normed_arbor
+
+        xy_x, xy_y, xy_dist, xy_hist = get_xyprofile(
+            self.warped_arbor, xy_window=xy_window, nbins=xy_nbins, sigma_bins=xy_sigma_bins
+        )
+        self.xy_x: np.ndarray = xy_x
+        self.xy_y: np.ndarray = xy_y
+        self.xy_dist: np.ndarray = xy_dist
+        self.xy_hist: np.ndarray = xy_hist
 
         return self
 
@@ -151,3 +164,13 @@ class Warper:
         if isinstance(data, (tuple, list)) and len(data) == 3:
             return map(np.asarray, data)  # type: ignore[arg-type]
         raise TypeError("SAC data must be a mapping with keys x/y/z or a 3‑tuple of arrays.")
+
+
+    def stats(self):
+
+        """Return the statistics of the warped arbor."""
+        if self.warped_arbor is None:
+            raise RuntimeError("Arbor not warped yet. Call warp().")
+        
+        # Calculate the statistics
+        ## 
