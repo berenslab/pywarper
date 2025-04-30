@@ -1,11 +1,3 @@
-"""
-Basic, self-contained checks for stats.py.
-
-Run with:
-    pytest -q
-"""
-from __future__ import annotations
-
 import numpy as np
 import pytest
 
