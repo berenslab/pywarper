@@ -27,9 +27,9 @@ class Warper:
 
     def __init__(
         self,
-        off_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]],
-        on_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray]],
-        swc_path: str,
+        off_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray], None] = None,
+        on_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray], None] = None,
+        swc_path: Optional[str] = None,
         *,
         voxel_resolution: list[float] = [0.4, 0.4, 0.5],
         verbose: bool = False,
@@ -39,16 +39,71 @@ class Warper:
         self.verbose = verbose
         self.swc_path = swc_path
 
-        # parse SAC point clouds
-        self.off_sac = self._as_xyz(off_sac)
-        self.on_sac = self._as_xyz(on_sac)
+        if off_sac is not None:
+            self.off_sac = self._as_xyz(off_sac)
+        if on_sac is not None:
+            self.on_sac  = self._as_xyz(on_sac)
 
-        # read arbor to warp
-        self._load_swc()
+        if swc_path is not None:
+            self.swc_path = swc_path
+            self.load_swc(swc_path)          # raw SWC → self.nodes / edges / radii
+        else:
+            self.swc_path = None
 
     # ---------------------------------------------------------------------
     # public pipeline ------------------------------------------------------
     # ---------------------------------------------------------------------
+    def load_swc(self, swc_path: Optional[str] = None) -> "Warper":
+        """Load the arbor from *swc_path*."""
+
+        if self.verbose:
+            print(f"[Warper] Loading arbor → {self.swc_path}")
+
+        if swc_path is None:
+            swc_path = self.swc_path
+
+        arbor, nodes, edges, radii = read_arbor_trace(swc_path)
+
+        # +1 to emulate MATLAB indexing used in original scripts
+        self.arbor: pd.DataFrame = arbor
+        self.nodes: np.ndarray = nodes
+        self.edges: np.ndarray = edges
+        self.radii: np.ndarray = radii
+
+        return self
+
+    def load_sac(self, off_sac, on_sac) -> "Warper":
+        """Load the SAC meshes from *off_sac* and *on_sac*."""
+        if self.verbose:
+            print("[Warper] Loading SAC meshes …")
+        self.off_sac = self._as_xyz(off_sac)
+        self.on_sac  = self._as_xyz(on_sac)
+        return self
+
+    def load_warped_arbor(self, 
+            swc_path: str,
+            medVZmin: Optional[float] = None,
+            medVZmax: Optional[float] = None,
+    ) -> None:
+        """Load a warped arbor from *swc_path*."""
+        arbor, nodes, edges, radii = read_arbor_trace(swc_path)
+        self.warped_arbor = {
+            "nodes": nodes,
+            "edges": edges,
+            "radii": radii,
+        }
+
+        if (medVZmin is not None) and (medVZmax is not None):
+            self.warped_arbor["medVZmin"] = float(medVZmin)
+            self.warped_arbor["medVZmax"] = float(medVZmax)
+        else:
+            self.warped_arbor["medVZmin"] = None
+            self.warped_arbor["medVZmax"] = None
+        
+        if self.verbose:
+            print(f"[Warper] Loaded warped arbor → {swc_path}")
+
+
     def fit_surfaces(self, smoothness: int = 15) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
@@ -103,8 +158,8 @@ class Warper:
     # convenience helpers --------------------------------------------------
     def get_arbor_denstiy(
             self, 
-            z_res: float = 0.5, 
-            z_window: list[float] = [-30, 30],
+            z_res: float = 1, 
+            z_window: Optional[list[float]] = None,
             z_nbins: int = 120,
             xy_window: Optional[list[float]] = None,
             xy_nbins: int = 20,
@@ -113,7 +168,7 @@ class Warper:
         """Return depth profile as in *get_zprofile*."""
         if self.warped_arbor is None:
             raise RuntimeError("Arbor not warped yet. Call warp().")
-        z_x, z_dist, z_hist, normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window)
+        z_x, z_dist, z_hist, normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window, nbins=z_nbins)
         self.z_x: np.ndarray = z_x
         self.z_dist: np.ndarray = z_dist
         self.z_hist: np.ndarray = z_hist
@@ -129,7 +184,7 @@ class Warper:
 
         return self
 
-    def save(self, out_path: str) -> None:
+    def to_swc(self, out_path: str) -> None:
         """Save the warped arbor to *out_path* in SWC format."""
         if self.warped_arbor is None:
             raise RuntimeError("Arbor not warped yet. Call warp().")
@@ -145,16 +200,6 @@ class Warper:
         if self.verbose:
             print(f"[Warper] Saved warped arbor → {out_path}")
 
-    # ------------------------------------------------------------------
-    # internal helpers -------------------------------------------------
-    # ------------------------------------------------------------------
-    def _load_swc(self):
-        arbor, nodes, edges, radii = read_arbor_trace(self.swc_path)
-        # +1 to emulate MATLAB indexing used in original scripts
-        self.arbor: pd.DataFrame = arbor
-        self.nodes: np.ndarray = nodes
-        self.edges: np.ndarray = edges
-        self.radii: np.ndarray = radii
 
     @staticmethod
     def _as_xyz(data) -> tuple[np.ndarray, np.ndarray, np.ndarray]:

@@ -456,10 +456,21 @@ def get_zprofile(
     density, nodes = segment_lengths(warped_arbor["nodes"],
                                     warped_arbor["edges"])
 
-    vz_on, vz_off = warped_arbor["medVZmin"], warped_arbor["medVZmax"]
-    rel_depth = (nodes[:, 2] / z_res - vz_on) / (vz_off - vz_on)  # 0→ON, 1→OFF
-    z_phys = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
 
+    has_surfaces = (
+        warped_arbor.get("medVZmin") is not None and
+        warped_arbor.get("medVZmax") is not None
+    )
+
+    if has_surfaces:
+        vz_on = warped_arbor["medVZmin"]
+        vz_off = warped_arbor["medVZmax"]
+        rel_depth = (nodes[:, 2] / z_res - vz_on) / (vz_off - vz_on)  # 0→ON, 1→OFF
+        z_phys = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
+
+    else:
+        z_phys = nodes[:, 2] 
+        z_res = 1.0
 
     # 2) decide bin edges *once*
     if z_min is None or z_max is None:
