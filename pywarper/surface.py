@@ -192,112 +192,76 @@ def resample_zgrid(
     return vzmesh, xi, yi
 
 
-def calculate_diag_length(    
+def calculate_diag_length(
     xpos: np.ndarray,
     ypos: np.ndarray,
     VZmesh: np.ndarray
 ) -> tuple[float, float]:
     """
-    Computes the 3D length along the main diagonal and skew diagonal of the
-    surface given by VZmesh, where xpos and ypos define the coordinate axes.
+    Computes the 3D length along the main and skew diagonals of VZmesh
+    (exactly the same result as the original implementation).
 
     Parameters
     ----------
-    xpos : np.ndarray
-        1D array of x-coordinates (length M).
-    ypos : np.ndarray
-        1D array of y-coordinates (length N).
-    VZmesh : np.ndarray
-        2D array of shape (M, N), representing z-values at the grid points
-        formed by xpos and ypos.
+    xpos, ypos, VZmesh : see original docstring.
 
     Returns
     -------
-    main_diag_dist : float
-        The summed 3D distance along the main diagonal of the surface.
-    skew_diag_dist : float
-        The summed 3D distance along the skew (reverse) diagonal of the surface.
-
-    Notes
-    -----
-    The function interpolates coordinates along whichever dimension is larger,
-    then sums Euclidean distances in 3D for each diagonal path.
+    main_diag_dist, skew_diag_dist : float
     """
     M, N = VZmesh.shape  # M = len(xpos), N = len(ypos)
 
-    # Build interpolators over the regular (xpos,ypos) grid
-    interp_x = RegularGridInterpolator((xpos, ypos), 
-                                       np.meshgrid(xpos, ypos, indexing='ij')[0],
-                                       method='linear')
-    interp_y = RegularGridInterpolator((xpos, ypos), 
-                                       np.meshgrid(xpos, ypos, indexing='ij')[1],
-                                       method='linear')
-    interp_z = RegularGridInterpolator((xpos, ypos), VZmesh, 
-                                       method='linear')
+    # Build regular-grid interpolators
+    interp_x = RegularGridInterpolator(
+        (xpos, ypos),
+        np.meshgrid(xpos, ypos, indexing="ij")[0],
+        method="linear"
+    )
+    interp_y = RegularGridInterpolator(
+        (xpos, ypos),
+        np.meshgrid(xpos, ypos, indexing="ij")[1],
+        method="linear"
+    )
+    interp_z = RegularGridInterpolator(
+        (xpos, ypos), VZmesh, method="linear"
+    )
 
-    main_diag_dist = 0.0
-    skew_diag_dist = 0.0
-
-    # if N >= M, we step N times in x, and use the full range of ypos in y
     if N >= M:
-        # Build vectors for diagonal queries, matching the MATLAB approach
-        x_diag = np.linspace(xpos[0], xpos[-1], N)  # length N
-        y_main_diag = np.array(ypos)               # also length N
-        y_skew_diag = y_main_diag[::-1]
+        # vectors of length N
+        x_diag = np.linspace(xpos[0], xpos[-1], N)
+        y_main = ypos
+        y_skew = y_main[::-1]
 
-        # Evaluate on main diagonal
-        pts_main = np.column_stack((x_diag, y_main_diag))  # shape (N,2)
-        x_knots_main = interp_x(pts_main)
-        y_knots_main = interp_y(pts_main)
-        z_knots_main = interp_z(pts_main)
-
-        # Evaluate on skew diagonal
-        pts_skew = np.column_stack((x_diag, y_skew_diag))
-        x_knots_skew = interp_x(pts_skew)
-        y_knots_skew = interp_y(pts_skew)
-        z_knots_skew = interp_z(pts_skew)
-
-        # Accumulate distances
-        for kk in range(N - 1):
-            dx_main = x_knots_main[kk] - x_knots_main[kk + 1]
-            dy_main = y_knots_main[kk] - y_knots_main[kk + 1]
-            dz_main = z_knots_main[kk] - z_knots_main[kk + 1]
-            main_diag_dist += np.sqrt(dx_main**2 + dy_main**2 + dz_main**2)
-
-            dx_skew = x_knots_skew[kk] - x_knots_skew[kk + 1]
-            dy_skew = y_knots_skew[kk] - y_knots_skew[kk + 1]
-            dz_skew = z_knots_skew[kk] - z_knots_skew[kk + 1]
-            skew_diag_dist += np.sqrt(dx_skew**2 + dy_skew**2 + dz_skew**2)
-
+        pts_main = np.column_stack((x_diag, y_main))
+        pts_skew = np.column_stack((x_diag, y_skew))
     else:
-        # M > N
-        y_diag = np.linspace(ypos[0], ypos[-1], M)  # length M
-        x_main_diag = np.array(xpos)               # also length M
-        x_skew_diag = x_main_diag[::-1]
+        # vectors of length M
+        y_diag = np.linspace(ypos[0], ypos[-1], M)
+        x_main = xpos
+        x_skew = x_main[::-1]
 
-        # Evaluate on main diagonal
-        pts_main = np.column_stack((x_main_diag, y_diag))  # shape (M,2)
-        x_knots_main = interp_x(pts_main)
-        y_knots_main = interp_y(pts_main)
-        z_knots_main = interp_z(pts_main)
+        pts_main = np.column_stack((x_main, y_diag))
+        pts_skew = np.column_stack((x_skew, y_diag))
 
-        # Evaluate on skew diagonal
-        pts_skew = np.column_stack((x_skew_diag, y_diag))
-        x_knots_skew = interp_x(pts_skew)
-        y_knots_skew = interp_y(pts_skew)
-        z_knots_skew = interp_z(pts_skew)
+    # Evaluate coordinates on both diagonals
+    x_main_v = interp_x(pts_main)
+    y_main_v = interp_y(pts_main)
+    z_main_v = interp_z(pts_main)
 
-        # Accumulate distances
-        for kk in range(M - 1):
-            dx_main = x_knots_main[kk] - x_knots_main[kk + 1]
-            dy_main = y_knots_main[kk] - y_knots_main[kk + 1]
-            dz_main = z_knots_main[kk] - z_knots_main[kk + 1]
-            main_diag_dist += np.sqrt(dx_main**2 + dy_main**2 + dz_main**2)
+    x_skew_v = interp_x(pts_skew)
+    y_skew_v = interp_y(pts_skew)
+    z_skew_v = interp_z(pts_skew)
 
-            dx_skew = x_knots_skew[kk] - x_knots_skew[kk + 1]
-            dy_skew = y_knots_skew[kk] - y_knots_skew[kk + 1]
-            dz_skew = z_knots_skew[kk] - z_knots_skew[kk + 1]
-            skew_diag_dist += np.sqrt(dx_skew**2 + dy_skew**2 + dz_skew**2)
+    # Stack, diff, and accumulate Euclidean distances (vectorised, no Python loop)
+    diffs_main = np.diff(
+        np.stack((x_main_v, y_main_v, z_main_v), axis=1), axis=0
+    )
+    diffs_skew = np.diff(
+        np.stack((x_skew_v, y_skew_v, z_skew_v), axis=1), axis=0
+    )
+
+    main_diag_dist = np.sqrt((diffs_main ** 2).sum(1)).sum()
+    skew_diag_dist = np.sqrt((diffs_skew ** 2).sum(1)).sum()
 
     return main_diag_dist, skew_diag_dist
 
@@ -342,6 +306,39 @@ def assign_local_coordinates(triangle: np.ndarray) -> tuple[complex, complex, co
     zeta = np.abs(np.real(1j * (np.conj(w2) * w1 - np.conj(w1) * w2)))
     return w1, w2, w3, zeta
 
+def assign_local_coordinates_batch(triangles: np.ndarray) -> tuple[np.ndarray, ...]:
+    """
+    Vectorised local complex coordinates for many triangles at once.
+
+    Parameters
+    ----------
+    triangles : np.ndarray
+        Shape (T, 3, 3).  triangles[:, i, :] is the (x,y,z) of vertex i.
+
+    Returns
+    -------
+    w1, w2, w3 : np.ndarray, shape (T,)
+    zeta       : np.ndarray, shape (T,)
+    """
+    v1 = triangles[:, 0, :]
+    v2 = triangles[:, 1, :]
+    v3 = triangles[:, 2, :]
+
+    d12 = np.linalg.norm(v1 - v2, axis=1)
+    d13 = np.linalg.norm(v1 - v3, axis=1)
+    d23 = np.linalg.norm(v2 - v3, axis=1)
+
+    y3 = ((-d12) ** 2 + d13 ** 2 - d23 ** 2) / (2 * -d12)
+    x3 = np.sqrt(np.maximum(0.0, d13 ** 2 - y3 ** 2))
+
+    w2 = -x3 - 1j * y3
+    w1 =  x3 + 1j * (y3 + d12)
+    w3 = 1j * (-d12)
+
+    zeta = np.abs(np.real(1j * (np.conj(w2) * w1 - np.conj(w1) * w2)))
+    return w1, w2, w3, zeta
+
+
 def conformal_map_indep_fixed_diagonals(
     mainDiagDist: float,
     skewDiagDist: float,
@@ -379,50 +376,46 @@ def conformal_map_indep_fixed_diagonals(
     constructing a sparse system to enforce approximate conformality, and then
     solving for new vertex positions subject to diagonally fixed boundaries.
     The final 2D layout merges two separate diagonal constraints.
-    """    
+    """  
     M, N = VZmesh.shape
     xpos_new = xpos + 1
     ypos_new = ypos + 1
-    vertexCount:int = M * N
+    vertexCount = M * N
     triangleCount = (2 * M - 2) * (N - 1)
 
-    # Efficient triangulation construction
-    col1 = np.kron([1, 1], np.arange(M - 1)).reshape(-1, 1)
-    temp1 = np.kron([1, M + 1], np.ones(M - 1)).reshape(-1, 1)
-    temp2 = np.kron([M + 1, M], np.ones(M - 1)).reshape(-1, 1)
-    one_column = np.hstack([col1, col1 + temp1, col1 + temp2]).astype(int)
+    # --- build triangulation -------------------------------------------------
+    col1 = np.kron([1, 1], np.arange(M - 1))
+    temp1 = np.kron([1, M + 1], np.ones(M - 1))
+    temp2 = np.kron([M + 1, M], np.ones(M - 1))
+    one_column = np.stack([col1, col1 + temp1, col1 + temp2], axis=1).astype(int)
 
-    # Corrected broadcasting logic
-    one_column_tiled = np.tile(one_column, (N - 1, 1))
-    offsets = (np.repeat(np.arange(N - 1), 2 * M - 2) * M).reshape(-1, 1)
-    triangulation = (one_column_tiled + offsets).astype(int)
+    triangulation = np.tile(one_column, (N - 1, 1))
+    offsets = np.repeat(np.arange(N - 1), 2 * M - 2)[:, None] * M
+    triangulation += offsets
+    # triangulation.shape == (triangleCount, 3)
 
-    # Precompute arrays
+    # --- vectorised local-coordinate calculation ----------------------------
+    rows = triangulation % M
+    cols = triangulation // M
+
+    triangles_xyz = np.empty((triangleCount, 3, 3), dtype=np.float64)
+    triangles_xyz[:, :, 0] = xpos_new[rows]
+    triangles_xyz[:, :, 1] = ypos_new[cols]
+    triangles_xyz[:, :, 2] = VZmesh[rows, cols]
+
+    w1, w2, w3, zeta = assign_local_coordinates_batch(triangles_xyz)
+    denom = np.sqrt(zeta / 2.0)
+
+    ws_real = np.column_stack([np.real(w1), np.real(w2), np.real(w3)]) / denom[:, None]
+    ws_imag = np.column_stack([np.imag(w1), np.imag(w2), np.imag(w3)]) / denom[:, None]
+
     row_indices = np.repeat(np.arange(triangleCount), 3)
-    col_indices = triangulation.flatten()
+    col_indices = triangulation.ravel()
 
-    Mreal_data = np.zeros(triangleCount * 3)
-    Mimag_data = np.zeros(triangleCount * 3)
-
-    # Loop once to fill the data
-    for tri_idx in range(triangleCount):
-        vertices = triangulation[tri_idx]
-        coords = np.column_stack((
-            xpos_new[vertices % M],
-            ypos_new[vertices // M],
-            VZmesh[vertices % M, vertices // M]
-        ))
-        w1, w2, w3, zeta = assign_local_coordinates(coords)
-        denom = np.sqrt(zeta / 2)
-        ws = [w1, w2, w3]
-
-        idx = slice(tri_idx * 3, (tri_idx + 1) * 3)
-        Mreal_data[idx] = np.real(ws) / denom
-        Mimag_data[idx] = np.imag(ws) / denom
-
-    # Build sparse matrices in one step
-    Mreal_csr = coo_matrix((Mreal_data, (row_indices, col_indices)), shape=(triangleCount, vertexCount)).tocsr()
-    Mimag_csr = coo_matrix((Mimag_data, (row_indices, col_indices)), shape=(triangleCount, vertexCount)).tocsr()
+    Mreal_csr = coo_matrix((ws_real.ravel(), (row_indices, col_indices)),
+                           shape=(triangleCount, vertexCount)).tocsr()
+    Mimag_csr = coo_matrix((ws_imag.ravel(), (row_indices, col_indices)),
+                           shape=(triangleCount, vertexCount)).tocsr()
 
     def solve_mapping(fixed_pts, fixed_vals, free_pts):
         A = vstack([

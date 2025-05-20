@@ -29,3 +29,5 @@ venv/
 *.swo
 
 dev/
+
+*copy*
