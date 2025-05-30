@@ -12,18 +12,7 @@ __all__ = [
 ]
 
 class Warper:
-    """High‑level interface around *pywarper* for IPL flattening.
-
-    Typical usage
-    -------------
-    >>> off = read_chat("off_sac.txt")
-    >>> on  = read_chat("on_sac.txt")
-    >>> w = Warper(off, on, "cell.swc")
-    >>> w.fit_surfaces()
-    >>> w.build_mapping()
-    >>> w.warp()
-    >>> w.save("cell_flat.swc")
-    """
+    """High‑level interface around *pywarper* for IPL flattening."""
 
     def __init__(
         self,
@@ -31,7 +20,7 @@ class Warper:
         on_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray], None] = None,
         swc_path: Optional[str] = None,
         *,
-        voxel_resolution: list[float] = [0.4, 0.4, 0.5],
+        voxel_resolution: list[float] = [1.0, 1.0, 1.0],
         verbose: bool = False,
     ) -> None:
 
@@ -50,14 +39,12 @@ class Warper:
         else:
             self.swc_path = None
 
-    # ---------------------------------------------------------------------
-    # public pipeline ------------------------------------------------------
-    # ---------------------------------------------------------------------
+    # ---------------------------- IO -------------------------------------
     def load_swc(self, swc_path: Optional[str] = None) -> "Warper":
         """Load the arbor from *swc_path*."""
 
         if self.verbose:
-            print(f"[Warper] Loading arbor → {self.swc_path}")
+            print(f"[pywarper] Loading arbor → {self.swc_path}")
 
         if swc_path is None:
             swc_path = self.swc_path
@@ -75,7 +62,7 @@ class Warper:
     def load_sac(self, off_sac, on_sac) -> "Warper":
         """Load the SAC meshes from *off_sac* and *on_sac*."""
         if self.verbose:
-            print("[Warper] Loading SAC meshes …")
+            print("[pywarper] Loading SAC meshes …")
         self.off_sac = self._as_xyz(off_sac)
         self.on_sac  = self._as_xyz(on_sac)
         return self
@@ -101,18 +88,35 @@ class Warper:
             self.warped_arbor["medVZmax"] = None
         
         if self.verbose:
-            print(f"[Warper] Loaded warped arbor → {swc_path}")
+            print(f"[pywarper] Loaded warped arbor → {swc_path}")
 
+    def to_swc(self, out_path: str) -> None:
+        """Save the warped arbor to *out_path* in SWC format."""
+        if self.warped_arbor is None:
+            raise RuntimeError("Arbor not warped yet. Call warp().")
+
+        arr = np.hstack([
+            self.warped_arbor["edges"][:, 0][:, None].astype(int),          # n
+            np.zeros_like(self.warped_arbor["edges"][:, 1][:, None]),       # t = 0
+            self.warped_arbor["nodes"],                                      # xyz
+            self.warped_arbor["radii"][:, None],                            # radius
+            self.warped_arbor["edges"][:, 1][:, None],                      # parent
+        ])
+        pd.DataFrame(arr).to_csv(out_path, sep="\t", index=False, header=False)
+        if self.verbose:
+            print(f"[pywarper] Saved warped arbor → {out_path}")
+
+    # ---------------------------- Core -----------------------------------
 
     def fit_surfaces(self, smoothness: int = 15) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
-            print("[Warper] Fitting OFF‑SAC surface …")
+            print("[pywarper] Fitting OFF‑SAC surface …")
         self.vz_off, *_ = fit_surface(
             x=self.off_sac[0], y=self.off_sac[1], z=self.off_sac[2], smoothness=smoothness
         )
         if self.verbose:
-            print("[Warper] Fitting ON‑SAC surface …")
+            print("[pywarper] Fitting ON‑SAC surface …")
         self.vz_on, *_ = fit_surface(
             x=self.on_sac[0], y=self.on_sac[1], z=self.on_sac[2], smoothness=smoothness
         )
@@ -128,7 +132,7 @@ class Warper:
             self.nodes[:, 1].min(), self.nodes[:, 1].max(),
         ])
         if self.verbose:
-            print("[Warper] Building mapping …")
+            print("[pywarper] Building mapping …")
         self.mapping: dict = warp_surface(
             self.vz_on,
             self.vz_off,
@@ -143,7 +147,7 @@ class Warper:
         if self.mapping is None:
             raise RuntimeError("Mapping missing. Call build_mapping() first.")
         if self.verbose:
-            print("[Warper] Warping arbor …")
+            print("[pywarper] Warping arbor …")
         self.warped_arbor: dict = warp_arbor(
             self.nodes,
             self.edges,
@@ -155,7 +159,7 @@ class Warper:
         )
         return self
 
-    # convenience helpers --------------------------------------------------
+    # ---------------------------- Stats ----------------------------------
     def get_arbor_denstiy(
             self, 
             z_res: float = 1, 
@@ -183,22 +187,6 @@ class Warper:
         self.xy_hist: np.ndarray = xy_hist
 
         return self
-
-    def to_swc(self, out_path: str) -> None:
-        """Save the warped arbor to *out_path* in SWC format."""
-        if self.warped_arbor is None:
-            raise RuntimeError("Arbor not warped yet. Call warp().")
-
-        arr = np.hstack([
-            self.warped_arbor["edges"][:, 0][:, None].astype(int),          # n
-            np.zeros_like(self.warped_arbor["edges"][:, 1][:, None]),       # t = 0
-            self.warped_arbor["nodes"],                                      # xyz
-            self.warped_arbor["radii"][:, None],                            # radius
-            self.warped_arbor["edges"][:, 1][:, None],                      # parent
-        ])
-        pd.DataFrame(arr).to_csv(out_path, sep="\t", index=False, header=False)
-        if self.verbose:
-            print(f"[Warper] Saved warped arbor → {out_path}")
 
 
     @staticmethod

@@ -1,7 +1,6 @@
 import numpy as np
 import pandas as pd
 
-# import scipy.spatial
 
 def read_arbor_trace(
     datapath: str,
@@ -53,5 +52,5 @@ def read_arbor_trace(
 
         df = downsampled_df
 
-    return df, df[["x", "y", "z"]].values, df[["n", "parent"]].values, df["radius"].values
+    return df, df[["x", "y", "z"]].values, df[["n", "parent"]].values, df[["radius"]].values
 

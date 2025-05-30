@@ -86,8 +86,6 @@ def fit_surface(
 
     xnodes = np.hstack([np.arange(1., xmax, 3), np.array([xmax])])
     ynodes = np.hstack([np.arange(1., ymax, 3), np.array([ymax])])
-    # xnodes = np.arange(0, xmax+skip, skip)
-    # ynodes = np.arange(0, ymax+skip, skip)
 
     gf = GridFit(x, y, z, xnodes, ynodes, 
                     smoothness=smoothness,
@@ -629,13 +627,21 @@ def warp_surface(
     5. Returns a dictionary of intermediate results for further inspection.
     """
 
-    xmin, xmax, ymin, ymax = arbor_boundaries
+    xmin, xmax, ymin, ymax = arbor_boundaries - 1 # Convert to 0-based indexing
 
-    thisx = np.round(np.arange(np.maximum(xmin-2, 0), np.minimum(xmax+1, thisvzmaxmesh.shape[0]), conformal_jump)).astype(int)
-    thisy = np.round(np.arange(np.maximum(ymin-2, 0), np.minimum(ymax+1, thisvzmaxmesh.shape[1]), conformal_jump)).astype(int)
+    nx, ny = thisvzmaxmesh.shape
+    thisx = np.arange(max(xmin - 1, 0),  min(xmax + 1, nx - 1) + 1,
+                    conformal_jump, dtype=int)
+    thisy = np.arange(max(ymin - 1, 0),  min(ymax + 1, ny - 1) + 1,
+                    conformal_jump, dtype=int)
 
-    thisminmesh = thisvzminmesh[thisx[:, None], thisy]
-    thismaxmesh = thisvzmaxmesh[thisx[:, None], thisy]
+    # probably not necessary but better ensure that thisx, thisy are within bounds
+    thisx = thisx[(thisx >= 0) & (thisx < thisvzminmesh.shape[0])]
+    thisy = thisy[(thisy >= 0) & (thisy < thisvzminmesh.shape[1])]
+
+    thisminmesh = thisvzminmesh[np.ix_(thisx, thisy)]
+    thismaxmesh = thisvzmaxmesh[np.ix_(thisx, thisy)]
+
     # calculate the traveling distances on the diagonals of the two SAC surfaces 
     start_time = time.time()
     main_diag_dist_min, skew_diag_dist_min = calculate_diag_length(thisx, thisy, thisminmesh)
