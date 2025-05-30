@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from pywarper.arbor import get_xyprofile, get_zprofile, warp_arbor
-from pywarper.surface import fit_surface, warp_surface
+from pywarper.surface import build_sac_mapping, fit_surface
 from pywarper.utils import read_arbor_trace
 
 __all__ = [
@@ -112,19 +112,19 @@ class Warper:
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
             print("[pywarper] Fitting OFF‑SAC surface …")
-        self.vz_off, *_ = fit_surface(
+        self.off_sac_surface, *_ = fit_surface(
             x=self.off_sac[0], y=self.off_sac[1], z=self.off_sac[2], smoothness=smoothness
         )
         if self.verbose:
             print("[pywarper] Fitting ON‑SAC surface …")
-        self.vz_on, *_ = fit_surface(
+        self.on_sac_surface, *_ = fit_surface(
             x=self.on_sac[0], y=self.on_sac[1], z=self.on_sac[2], smoothness=smoothness
         )
         return self
 
     def build_mapping(self, conformal_jump: int = 2) -> "Warper":
         """Create the quasi‑conformal surface mapping."""
-        if self.vz_off is None or self.vz_on is None:
+        if self.off_sac_surface is None or self.on_sac_surface is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
 
         bounds = np.array([
@@ -133,9 +133,9 @@ class Warper:
         ])
         if self.verbose:
             print("[pywarper] Building mapping …")
-        self.mapping: dict = warp_surface(
-            self.vz_on,
-            self.vz_off,
+        self.mapping: dict = build_sac_mapping(
+            self.on_sac_surface,
+            self.off_sac_surface,
             bounds,
             conformal_jump=conformal_jump,
             verbose=self.verbose,
