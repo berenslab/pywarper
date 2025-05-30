@@ -1,5 +1,3 @@
-from typing import Optional
-
 import numpy as np
 from alphashape import alphashape
 
@@ -35,7 +33,7 @@ def _polygon_area(vertices: np.ndarray) -> float:
     return 0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
 
-def _polygon_centroid(vertices: np.ndarray, signed_area: Optional[float] = None) -> np.ndarray:
+def _polygon_centroid(vertices: np.ndarray, signed_area: float | None = None) -> np.ndarray:
     """Centroid *x, y* of a simple polygon.
 
     The arithmetic mean is used when the polygon area is ~ 0.

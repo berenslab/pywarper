@@ -1,5 +1,3 @@
-from typing import Optional, Union
-
 import numpy as np
 import pandas as pd
 
@@ -16,9 +14,9 @@ class Warper:
 
     def __init__(
         self,
-        off_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray], None] = None,
-        on_sac: Union[dict[str, np.ndarray], tuple[np.ndarray, np.ndarray, np.ndarray], None] = None,
-        swc_path: Optional[str] = None,
+        off_sac: dict[str, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+        on_sac: dict[str, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+        swc_path: str | None = None,
         *,
         voxel_resolution: list[float] = [1.0, 1.0, 1.0],
         verbose: bool = False,
@@ -40,7 +38,7 @@ class Warper:
             self.swc_path = None
 
     # ---------------------------- IO -------------------------------------
-    def load_swc(self, swc_path: Optional[str] = None) -> "Warper":
+    def load_swc(self, swc_path: str | None = None) -> "Warper":
         """Load the arbor from *swc_path*."""
 
         if self.verbose:
@@ -69,8 +67,8 @@ class Warper:
 
     def load_warped_arbor(self, 
             swc_path: str,
-            medVZmin: Optional[float] = None,
-            medVZmax: Optional[float] = None,
+            medVZmin: float | None = None,
+            medVZmax: float | None = None,
     ) -> None:
         """Load a warped arbor from *swc_path*."""
         arbor, nodes, edges, radii = read_arbor_trace(swc_path)
@@ -163,9 +161,9 @@ class Warper:
     def get_arbor_denstiy(
             self, 
             z_res: float = 1, 
-            z_window: Optional[list[float]] = None,
+            z_window: float | None = None,
             z_nbins: int = 120,
-            xy_window: Optional[list[float]] = None,
+            xy_window: float | None = None,
             xy_nbins: int = 20,
             xy_sigma_bins: float = 1.
     ) -> "Warper":
