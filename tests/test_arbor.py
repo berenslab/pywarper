@@ -3,7 +3,7 @@ import pandas as pd
 import scipy.io
 
 from pywarper.arbor import warp_arbor
-from pywarper.surface import fit_surface, warp_surface
+from pywarper.surface import build_sac_mapping, fit_surface
 from pywarper.utils import read_arbor_trace
 
 
@@ -36,12 +36,12 @@ def test_arbor():
         off_sac = chat_bottom
         on_sac = chat_top
 
-    rgc, nodes, edges, radii = read_arbor_trace("./tests/data/Image013-009_01_raw_latest_Uygar.swc")
+    _, nodes, edges, radii = read_arbor_trace("./tests/data/Image013-009_01_raw_latest_Uygar.swc")
     nodes += 1
-    thisvzmaxmesh, xgridmax, ygridmax = fit_surface(x=off_sac[0], y=off_sac[1], z=off_sac[2], smoothness=15)
-    thisvzminmesh, xgridmin, ygridmin = fit_surface(x=on_sac[0], y=on_sac[1], z=on_sac[2], smoothness=15)
+    off_sac_surface, _, _ = fit_surface(x=off_sac[0], y=off_sac[1], z=off_sac[2], smoothness=15)
+    on_sac_surface, _, _ = fit_surface(x=on_sac[0], y=on_sac[1], z=on_sac[2], smoothness=15)
     arbor_boundaries = np.array([nodes[:, 0].min(), nodes[:, 0].max(), nodes[:, 1].min(), nodes[:, 1].max()])
-    surface_mapping = warp_surface(thisvzminmesh, thisvzmaxmesh, arbor_boundaries, conformal_jump=2, verbose=True)
+    surface_mapping = build_sac_mapping(on_sac_surface, off_sac_surface, arbor_boundaries, conformal_jump=2, verbose=True)
     
     # to me it makes more sense to use physical units from the start but this is how the original code works
     # so I will keep it like this: only convert the warped arbor to physical units at the `warp_arbor` function
@@ -54,6 +54,6 @@ def test_arbor():
     warped_nodes_mat = warped_arbor_mat["warpedArbor"].nodes
 
     assert np.allclose(warped_nodes, warped_nodes_mat, rtol=1e-5, atol=1e-8), "Warped nodes do not match expected values."
-    assert np.isclose(warped_arbor["medVZmin"], warped_arbor_mat["warpedArbor"].medVZmin), "Minimum VZ does not match expected value."
-    assert np.isclose(warped_arbor["medVZmax"], warped_arbor_mat["warpedArbor"].medVZmax), "Maximum VZ does not match expected value."
-    assert warped_arbor["medVZmin"] < warped_arbor["medVZmax"], "Minimum VZ should be less than maximum VZ."
+    assert np.isclose(warped_arbor["med_z_on"], warped_arbor_mat["warpedArbor"].medVZmin), "Minimum VZ does not match expected value."
+    assert np.isclose(warped_arbor["med_z_off"], warped_arbor_mat["warpedArbor"].medVZmax), "Maximum VZ does not match expected value."
+    assert warped_arbor["med_z_on"] < warped_arbor["med_z_off"], "Minimum VZ should be less than maximum VZ."

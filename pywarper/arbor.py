@@ -190,12 +190,12 @@ def warp_arbor(
     """
 
     # Unpack mappings and surfaces
-    mapped_min = surface_mapping["mapped_min_positions"]
-    mapped_max = surface_mapping["mapped_max_positions"]
-    VZmin = surface_mapping["thisVZminmesh"]
-    VZmax = surface_mapping["thisVZmaxmesh"]
-    thisx = surface_mapping["thisx"] + 1 
-    thisy = surface_mapping["thisy"] + 1 
+    mapped_on = surface_mapping["mapped_on"]
+    mapped_off = surface_mapping["mapped_off"]
+    on_sac_surface = surface_mapping["on_sac_surface"]
+    off_sac_surface = surface_mapping["off_sac_surface"]
+    sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
+    sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
     # this is one ugly hack: thisx and thisy are 1-based in MATLAB
     # but 0-based in Python; the rest of the code is to produce exact
     # same results as MATLAB given the SAME input, that means thisx and 
@@ -206,44 +206,44 @@ def warp_arbor(
     # If thisx/thisy are consecutive integer indices:
     # x_vals = np.arange(thisx[0], thisx[-1] + 1)  # matches [thisx(1):thisx(end)] in MATLAB
     # y_vals = np.arange(thisy[0], thisy[-1] + 1)  # matches [thisy(1):thisy(end)] in MATLAB
-    x_vals = np.arange(thisx[0], thisx[-1] + 1, conformal_jump)
-    y_vals = np.arange(thisy[0], thisy[-1] + 1, conformal_jump)
+    x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
+    y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
 
     # Create a meshgrid shaped like MATLAB's [tmpymesh, tmpxmesh] = meshgrid(yRange, xRange).
     # This means we want shape (len(x_vals), len(y_vals)) for each array, with row=“x”, col=“y”:
-    tmpxmesh, tmpymesh = np.meshgrid(x_vals, y_vals, indexing="ij")
-    # tmpxmesh.shape == tmpymesh.shape == (len(x_vals), len(y_vals))
+    xmesh, ymesh = np.meshgrid(x_vals, y_vals, indexing="ij")
+    # xmesh.shape == ymesh.shape == (len(x_vals), len(y_vals))
 
     # Extract the corresponding subregion of the surfaces so it also has shape (len(x_vals), len(y_vals)).
     # In MATLAB: tmpminmesh = thisVZminmesh(xRange, yRange)
-    tmp_min = VZmin[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
-    tmp_max = VZmax[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+    on_subsampled_depths =  on_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+    off_subsampled_depths = off_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
 
     # Now flatten in column-major order (like MATLAB’s A(:)) to line up with tmpxmesh(:), etc.
-    top_input_pos = np.column_stack([
-        tmpxmesh.ravel(order="F"),
-        tmpymesh.ravel(order="F"),
-        tmp_min.ravel(order="F")
-    ])
+    on_input_pts = np.column_stack([
+        xmesh.ravel(order="F"),
+        ymesh.ravel(order="F"),
+        on_subsampled_depths.ravel(order="F")
+    ]) # old topInputPos
 
-    bot_input_pos = np.column_stack([
-        tmpxmesh.ravel(order="F"),
-        tmpymesh.ravel(order="F"),
-        tmp_max.ravel(order="F")
-    ])
+    off_input_pts = np.column_stack([
+        xmesh.ravel(order="F"),
+        ymesh.ravel(order="F"),
+        off_subsampled_depths.ravel(order="F")
+    ]) # old botInputPos
 
     # Finally, the “mapped” output is unaffected by the flattening order mismatch,
     # but we keep it consistent with MATLAB’s final step:
-    top_output_pos = np.column_stack([
-        mapped_min[:, 0],
-        mapped_min[:, 1],
-        np.median(tmp_min) * np.ones(mapped_min.shape[0])
+    on_output_pts = np.column_stack([
+        mapped_on[:, 0],
+        mapped_on[:, 1],
+        np.median(on_subsampled_depths) * np.ones(mapped_on.shape[0])
     ])
 
-    bot_output_pos = np.column_stack([
-        mapped_max[:, 0],
-        mapped_max[:, 1],
-        np.median(tmp_max) * np.ones(mapped_max.shape[0])
+    off_output_pts = np.column_stack([
+        mapped_off[:, 0],
+        mapped_off[:, 1],
+        np.median(off_subsampled_depths) * np.ones(mapped_off.shape[0])
     ])
 
     # return top_input_pos, bot_input_pos, top_output_pos, bot_output_pos
@@ -252,21 +252,21 @@ def warp_arbor(
     if verbose:
         print("Warping nodes...")
         start_time = time.time()
-    warped_nodes = local_ls_registration(nodes, top_input_pos, bot_input_pos, top_output_pos, bot_output_pos)
+    warped_nodes = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
     if verbose:
         print(f"Nodes warped in {time.time() - start_time:.2f} seconds.")
 
     # Compute median Z-planes
-    med_VZmin = np.median(tmp_min)
-    med_VZmax = np.median(tmp_max)
+    med_z_on = np.median(on_subsampled_depths)
+    med_z_off = np.median(off_subsampled_depths)
 
     # Build output dictionary
     warped_arbor = {
         'nodes': warped_nodes * voxel_resolution,
         'edges': edges,
         'radii': radii,
-        'medVZmin': med_VZmin,
-        'medVZmax': med_VZmax,
+        'med_z_on': med_z_on,
+        'med_z_off': med_z_off,
     }
 
     return warped_arbor
@@ -445,14 +445,14 @@ def get_zprofile(
 
 
     has_surfaces = (
-        warped_arbor.get("medVZmin") is not None and
-        warped_arbor.get("medVZmax") is not None
+        warped_arbor.get("med_z_on") is not None and
+        warped_arbor.get("med_z_off") is not None
     )
 
     if has_surfaces:
-        vz_on = warped_arbor["medVZmin"]
-        vz_off = warped_arbor["medVZmax"]
-        rel_depth = (nodes[:, 2] / z_res - vz_on) / (vz_off - vz_on)  # 0→ON, 1→OFF
+        med_z_on = warped_arbor["med_z_on"]
+        med_z_off = warped_arbor["med_z_off"]
+        rel_depth = (nodes[:, 2] / z_res - med_z_on) / (med_z_off - med_z_on)  # 0→ON, 1→OFF
         z_phys = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
 
     else:
