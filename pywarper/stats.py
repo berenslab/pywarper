@@ -1,7 +1,35 @@
 import numpy as np
 from alphashape import alphashape
 
-from .arbor import segment_lengths
+
+def _segment_lengths(
+    nodes: np.ndarray,
+    edges: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Edge length at each child node and the corresponding mid-point.
+
+    `edges` are the raw SWC child/parent pairs *1-based*.
+    """
+
+    # check if soma is first node
+    if edges[0, 1] == -1:
+        # remove soma from edges
+        edges = edges[1:]
+
+    child = edges[:, 0].astype(int) - 1     # → 0-based
+    parent = edges[:, 1].astype(int) - 1
+
+    density = np.zeros(nodes.shape[0], dtype=float)
+    mid = nodes.copy()
+
+    vec = nodes[parent] - nodes[child]
+    seg_len = np.linalg.norm(vec, axis=1)
+
+    density[child] = seg_len
+    mid[child] = nodes[child] + 0.5 * vec
+
+    return density, mid
 
 # Convex hull
 
@@ -121,7 +149,7 @@ def get_branch_point_count(edges: np.ndarray) -> int:
 
 def get_dendritic_length(nodes: np.ndarray, edges: np.ndarray) -> float:
     """Total cable length (µm) of an SWC tree."""
-    density, _ = segment_lengths(nodes, edges)
+    density, _ = _segment_lengths(nodes=nodes, edges=edges)
     return float(density.sum())
 
 
@@ -160,7 +188,7 @@ def _segment_stats(nodes: np.ndarray, edges: np.ndarray
         • 1‑based indices of irreducible nodes (for convenience)
         • tortuosities per segment
     """
-    density, _ = segment_lengths(nodes, edges)
+    density, _ = _segment_lengths(nodes=nodes, edges=edges)
 
     child = edges[:, 0].astype(int) - 1
     parent = edges[:, 1].astype(int) - 1
@@ -225,7 +253,7 @@ def get_typical_radius(nodes: np.ndarray, edges: np.ndarray, com_xy: np.ndarray)
     """
     Root-mean-square planar distance (µm) of dendritic cable to COM(xy).
     """
-    density, mid = segment_lengths(nodes, edges)
+    density, mid = _segment_lengths(nodes=nodes, edges=edges)
     dx = mid[:, 0] - com_xy[0]
     dy = mid[:, 1] - com_xy[1]
     return float(np.sqrt(np.sum(density * (dx**2 + dy**2)) / density.sum()))

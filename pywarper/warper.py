@@ -1,9 +1,10 @@
+from pathlib import Path
+
 import numpy as np
-import pandas as pd
+import skeliner as sk
 
 from pywarper.arbor import get_xyprofile, get_zprofile, warp_arbor
 from pywarper.surface import build_mapping, fit_sac_surface
-from pywarper.utils import read_arbor_trace
 
 __all__ = [
     "Warper"
@@ -47,13 +48,10 @@ class Warper:
         if swc_path is None:
             swc_path = self.swc_path
 
-        arbor, nodes, edges, radii = read_arbor_trace(swc_path)
-
-        # +1 to emulate MATLAB indexing used in original scripts
-        self.arbor: pd.DataFrame = arbor
-        self.nodes: np.ndarray = nodes
-        self.edges: np.ndarray = edges
-        self.radii: np.ndarray = radii
+        if swc_path is not None:
+            self.skel = sk.io.load_swc(swc_path)
+        else:
+            raise ValueError("SWC path must be provided to load the arbor.")
 
         return self
 
@@ -66,43 +64,27 @@ class Warper:
         return self
 
     def load_warped_arbor(self, 
-            swc_path: str,
+            filepath: str,
             med_z_on: float | None = None,
             med_z_off: float | None = None,
     ) -> None:
         """Load a warped arbor from *swc_path*."""
-        arbor, nodes, edges, radii = read_arbor_trace(swc_path)
-        self.warped_arbor = {
-            "nodes": nodes,
-            "edges": edges,
-            "radii": radii,
-        }
+        path = Path(filepath)
 
-        if (med_z_on is not None) and (med_z_off is not None):
-            self.warped_arbor["med_z_on"] = float(med_z_on)
-            self.warped_arbor["med_z_off"] = float(med_z_off)
-        else:
-            self.warped_arbor["med_z_on"] = None
-            self.warped_arbor["med_z_off"] = None
-        
+        if path.suffix.lower() == ".swc":
+            self.warped_arbor = sk.io.load_swc(path)
+
+            if (med_z_on is not None) and (med_z_off is not None):
+                self.warped_arbor.extra["med_z_on"] = float(med_z_on)
+                self.warped_arbor.extra["med_z_off"] = float(med_z_off)
+            else:
+                self.warped_arbor.extra["med_z_on"] = None
+                self.warped_arbor.extra["med_z_off"] = None
+        elif path.suffix.lower() == ".npz":
+            self.warped_arbor = sk.io.load_npz(path)
+            
         if self.verbose:
-            print(f"[pywarper] Loaded warped arbor → {swc_path}")
-
-    def to_swc(self, out_path: str) -> None:
-        """Save the warped arbor to *out_path* in SWC format."""
-        if self.warped_arbor is None:
-            raise RuntimeError("Arbor not warped yet. Call warp().")
-
-        arr = np.hstack([
-            self.warped_arbor["edges"][:, 0][:, None].astype(int),          # n
-            np.zeros_like(self.warped_arbor["edges"][:, 1][:, None]),       # t = 0
-            self.warped_arbor["nodes"],                                      # xyz
-            self.warped_arbor["radii"][:, None],                            # radius
-            self.warped_arbor["edges"][:, 1][:, None],                      # parent
-        ])
-        pd.DataFrame(arr).to_csv(out_path, sep="\t", index=False, header=False)
-        if self.verbose:
-            print(f"[pywarper] Saved warped arbor → {out_path}")
+            print(f"[pywarper] Loaded warped arbor → {path}")
 
     # ---------------------------- Core -----------------------------------
 
@@ -127,8 +109,8 @@ class Warper:
 
         if bounds is None:
             bounds = np.array([
-                self.nodes[:, 0].min(), self.nodes[:, 0].max(),
-                self.nodes[:, 1].min(), self.nodes[:, 1].max(),
+                self.skel.nodes[:, 0].min(), self.skel.nodes[:, 0].max(),
+                self.skel.nodes[:, 1].min(), self.skel.nodes[:, 1].max(),
             ])
         else:
             bounds = np.asarray(bounds, dtype=float)
@@ -152,10 +134,8 @@ class Warper:
             raise RuntimeError("Mapping missing. Call build_mapping() first.")
         if self.verbose:
             print("[pywarper] Warping arbor …")
-        self.warped_arbor: dict = warp_arbor(
-            self.nodes,
-            self.edges,
-            self.radii,
+        self.warped_arbor = warp_arbor(
+            self.skel,
             self.mapping,
             voxel_resolution=self.voxel_resolution,
             conformal_jump=conformal_jump,
@@ -180,7 +160,7 @@ class Warper:
         self.z_x: np.ndarray = z_x
         self.z_dist: np.ndarray = z_dist
         self.z_hist: np.ndarray = z_hist
-        self.normed_arbor: dict = normed_arbor
+        self.normed_arbor = normed_arbor
 
         xy_x, xy_y, xy_dist, xy_hist = get_xyprofile(
             self.warped_arbor, xy_window=xy_window, nbins=xy_nbins, sigma_bins=xy_sigma_bins

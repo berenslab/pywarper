@@ -38,7 +38,7 @@ from numpy.linalg import lstsq
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
-from skeliner.core import Skeleton, Soma
+from skeliner.core import Skeleton, Soma, _bfs_parents
 
 
 def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
@@ -158,15 +158,12 @@ def local_ls_registration(
 
 
 def warp_arbor(
-    nodes: np.ndarray,
-    edges: np.ndarray,
-    radii: np.ndarray,
-    # ntype: np.ndarray,
+    skel: Skeleton,
     surface_mapping: dict,
     voxel_resolution: Union[float, list] = [1., 1., 1.],
     conformal_jump: int = 1,
     verbose: bool = False
-) -> dict:
+) -> Skeleton:
     """
     Applies a local surface flattening (warp) to a neuronal arbor using the results
     of previously computed surface mappings.
@@ -222,6 +219,8 @@ def warp_arbor(
     3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
        reference planes in further analyses.
     """
+
+    nodes = skel.nodes.astype(float)
 
     # Unpack mappings and surfaces
     mapped_on = surface_mapping["mapped_on"]
@@ -286,7 +285,7 @@ def warp_arbor(
     if verbose:
         print("Warping nodes...")
         start_time = time.time()
-    warped_nodes = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
+    warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
     if verbose:
         print(f"Nodes warped in {time.time() - start_time:.2f} seconds.")
 
@@ -295,13 +294,14 @@ def warp_arbor(
     med_z_off = np.median(off_subsampled_depths)
 
     # Build output dictionary
-    warped_arbor = {
-        'nodes': warped_nodes * voxel_resolution,
-        'edges': edges,
-        'radii': radii,
-        'med_z_on': med_z_on,
-        'med_z_off': med_z_off,
-    }
+    # warped_arbor = {
+    #     'nodes': warped_nodes * voxel_resolution,
+    #     'edges': edges,
+    #     'radii': radii,
+    #     'med_z_on': med_z_on,
+    #     'med_z_off': med_z_off,
+    # }
+
 
     # warped_arbor = {
     #     "skel": Skeleton(
@@ -319,40 +319,43 @@ def warp_arbor(
     #      'med_z_off': med_z_off,            
     #     }
 
-    return warped_arbor
+    # return warped_arbor
 
+    skel_warp = Skeleton(
+        soma   = skel.soma,                      # untouched
+        nodes  = warped * voxel_resolution,
+        edges  = skel.edges,                     # same connectivity
+        radii  = skel.radii,                     # same dict
+        ntype  = skel.ntype,
+    )
+    skel_warp.extra = {          # optional – keep depth anchors
+        "med_z_on":  float(med_z_on),
+        "med_z_off": float(med_z_off),
+    }
+
+    return skel_warp
 
 # =====================================================================
 # helpers for get_zprofile()
 # =====================================================================
 
-def segment_lengths(
-    nodes: np.ndarray,
-    edges: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Edge length at each child node and the corresponding mid-point.
+def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
+    """Edge length at every non-root node & its mid-point."""
+    # rebuild parent[] (BFS on undirected edges)
+    parent = np.asarray(
+        _bfs_parents(skel.edges, len(skel.nodes), root=0),
+        dtype=np.int64,
+    )
+    child  = np.where(parent != -1)[0]           # (M,)
+    vec    = skel.nodes[parent[child]] - skel.nodes[child]
 
-    `edges` are the raw SWC child/parent pairs *1-based*.
-    """
+    seglen = np.linalg.norm(vec, axis=1)
 
-    # check if soma is first node
-    if edges[0, 1] == -1:
-        # remove soma from edges
-        edges = edges[1:]
+    density      = np.zeros(len(skel.nodes))
+    density[child] = seglen
 
-    child = edges[:, 0].astype(int) - 1     # → 0-based
-    parent = edges[:, 1].astype(int) - 1
-
-    density = np.zeros(nodes.shape[0], dtype=float)
-    mid = nodes.copy()
-
-    vec = nodes[parent] - nodes[child]
-    seg_len = np.linalg.norm(vec, axis=1)
-
-    density[child] = seg_len
-    mid[child] = nodes[child] + 0.5 * vec
-
+    mid = skel.nodes.copy()
+    mid[child] += 0.5 * vec
     return density, mid
 
 def gridder1d(
@@ -435,13 +438,13 @@ def gridder1d(
 # =====================================================================
 
 def get_zprofile(
-    warped_arbor: dict,
+    skel: Skeleton,
     z_res: float = 1.0,          
     z_window: Optional[list[float]] = None,
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0, 
     nbins: int = 120, 
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, Skeleton]:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped arbor.
 
@@ -490,18 +493,17 @@ def get_zprofile(
         z_min, z_max = z_window                    # user-fixed span
 
     # 1) edge lengths and mid-point nodes   
-    density, nodes = segment_lengths(warped_arbor["nodes"],
-                                    warped_arbor["edges"])
+    density, nodes = segment_lengths(skel)
 
 
     has_surfaces = (
-        warped_arbor.get("med_z_on") is not None and
-        warped_arbor.get("med_z_off") is not None
+        skel.extra.get("med_z_on") is not None and
+        skel.extra.get("med_z_off") is not None
     )
 
     if has_surfaces:
-        med_z_on = warped_arbor["med_z_on"]
-        med_z_off = warped_arbor["med_z_off"]
+        med_z_on = skel.extra["med_z_on"]
+        med_z_off = skel.extra["med_z_off"]
         rel_depth = (nodes[:, 2] / z_res - med_z_on) / (med_z_off - med_z_on)  # 0→ON, 1→OFF
         z_phys = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
 
@@ -533,14 +535,23 @@ def get_zprofile(
     # 5) bin centres & rescaled arbor
     x_um = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
 
-    nodes_norm = warped_arbor["nodes"].copy()
+    nodes_norm = skel.nodes.copy()
     nodes_norm[:, 2] = z_phys
-    normed_arbor = {**warped_arbor, "nodes": nodes_norm}
+    # normed_arbor = {**warped_arbor, "nodes": nodes_norm}
 
-    return x_um, z_dist, z_hist, normed_arbor
+    skel.soma.centre = nodes_norm[0]
+    skel_norm = Skeleton(
+        soma   = skel.soma,
+        nodes  = nodes_norm,
+        edges  = skel.edges,
+        radii  = skel.radii,
+        ntype  = skel.ntype,
+    )
+
+    return x_um, z_dist, z_hist, skel_norm
 
 def get_xyprofile(
-    warped_arbor: dict,
+    skel: Skeleton,       
     xy_window: Optional[list[float]] = None,
     nbins: int = 20,
     sigma_bins: float = 1.0,
@@ -571,8 +582,7 @@ def get_xyprofile(
     """
 
     # 1) edge lengths and mid-points (same helper you already have)
-    density, mid = segment_lengths(warped_arbor["nodes"],
-                                   warped_arbor["edges"])
+    density, mid = segment_lengths(skel)
 
     # 2) decide the common window
     if xy_window is None:
