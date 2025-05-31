@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from pywarper.arbor import get_xyprofile, get_zprofile, warp_arbor
-from pywarper.surface import build_sac_mapping, fit_surface
+from pywarper.surface import build_mapping, fit_sac_surface
 from pywarper.utils import read_arbor_trace
 
 __all__ = [
@@ -67,8 +67,8 @@ class Warper:
 
     def load_warped_arbor(self, 
             swc_path: str,
-            medVZmin: float | None = None,
-            medVZmax: float | None = None,
+            med_z_on: float | None = None,
+            med_z_off: float | None = None,
     ) -> None:
         """Load a warped arbor from *swc_path*."""
         arbor, nodes, edges, radii = read_arbor_trace(swc_path)
@@ -78,12 +78,12 @@ class Warper:
             "radii": radii,
         }
 
-        if (medVZmin is not None) and (medVZmax is not None):
-            self.warped_arbor["medVZmin"] = float(medVZmin)
-            self.warped_arbor["medVZmax"] = float(medVZmax)
+        if (med_z_on is not None) and (med_z_off is not None):
+            self.warped_arbor["med_z_on"] = float(med_z_on)
+            self.warped_arbor["med_z_off"] = float(med_z_off)
         else:
-            self.warped_arbor["medVZmin"] = None
-            self.warped_arbor["medVZmax"] = None
+            self.warped_arbor["med_z_on"] = None
+            self.warped_arbor["med_z_off"] = None
         
         if self.verbose:
             print(f"[pywarper] Loaded warped arbor → {swc_path}")
@@ -110,28 +110,34 @@ class Warper:
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
             print("[pywarper] Fitting OFF‑SAC surface …")
-        self.off_sac_surface, *_ = fit_surface(
+        self.off_sac_surface, *_ = fit_sac_surface(
             x=self.off_sac[0], y=self.off_sac[1], z=self.off_sac[2], smoothness=smoothness
         )
         if self.verbose:
             print("[pywarper] Fitting ON‑SAC surface …")
-        self.on_sac_surface, *_ = fit_surface(
+        self.on_sac_surface, *_ = fit_sac_surface(
             x=self.on_sac[0], y=self.on_sac[1], z=self.on_sac[2], smoothness=smoothness
         )
         return self
 
-    def build_mapping(self, conformal_jump: int = 2) -> "Warper":
+    def build_mapping(self, bounds:np.ndarray | tuple | None = None, conformal_jump: int = 2) -> "Warper":
         """Create the quasi‑conformal surface mapping."""
         if self.off_sac_surface is None or self.on_sac_surface is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
 
-        bounds = np.array([
-            self.nodes[:, 0].min(), self.nodes[:, 0].max(),
-            self.nodes[:, 1].min(), self.nodes[:, 1].max(),
-        ])
+        if bounds is None:
+            bounds = np.array([
+                self.nodes[:, 0].min(), self.nodes[:, 0].max(),
+                self.nodes[:, 1].min(), self.nodes[:, 1].max(),
+            ])
+        else:
+            bounds = np.asarray(bounds, dtype=float)
+            if bounds.shape != (4,):
+                raise ValueError("Bounds must be a 4‑element array or tuple (x_min, x_max, y_min, y_max).")
+        
         if self.verbose:
             print("[pywarper] Building mapping …")
-        self.mapping: dict = build_sac_mapping(
+        self.mapping: dict = build_mapping(
             self.on_sac_surface,
             self.off_sac_surface,
             bounds,

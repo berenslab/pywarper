@@ -1,3 +1,27 @@
+"""
+pywarper.surface
+================
+Numerical utilities for **flattening the Starburst Amacrine Cell (SAC) layers** of a retina.
+
+Given two depth maps—one for the ON SAC band and one for the OFF SAC band—this module performs
+
+1. **Surface fitting** (`fit_sac_surface`) – smooths scattered ChAT-band samples or arbor node coordinates
+   into regular height-fields using *PyGridFit*.
+2. **Uniform resampling** (`resample_zgrid`) – converts the irregular fit to a unit-spaced integer grid,
+   matching MATLAB’s historical conventions.
+3. **Diagonal length measurement** (`calculate_diag_length`) – computes the true 3-D lengths of the main
+   and skew diagonals; these serve as scale anchors for the conformal map.
+4. **Quasi-conformal mapping** (`conformal_map_indep_fixed_diagonals`) – straightens the two diagonals
+   while optimally preserving local angles, yielding 2-D coordinates for every voxel.
+5. **Map alignment** (`align_mapped_surface`) – rigidly shifts the OFF map so that its local slope
+   pattern best matches the ON map via patch-wise gradient minimisation.
+6. **Map building** (`build_mapping`) – runs the whole pipeline and returns the flattened
+   mapping along with diagnostic metadata.
+
+The resulting 2-D coordinates mapping can be applied to any neurite morphology located between the SAC layers
+so that axonal and dendritic trees can be visualised *as if* the inner plexiform layer were perfectly
+flat.
+"""
 import time
 
 import numpy as np
@@ -12,12 +36,16 @@ try:
     HAS_CHOLMOD = True
 except ImportError:
     HAS_CHOLMOD = False
-    print("[Info] scikit-sparse not found. Falling back to scipy.sparse.linalg.spsolve.")
-    print("[Info] Please consult the installation instructions for better performance: ")
-    print("\thttps://github.com/berenslab/pywarper#installation")
+    _WARN_MSG = (
+        "[pywarper.surface] Optional dependency 'scikit-sparse' (CHOLMOD bindings) not found. "
+        "Falling back to SciPy's sparse linear solver, which is ≈5–10× slower for large problems.\n\n"
+        "For platform-specific instructions see the project README:\n"
+        "\thttps://github.com/berenslab/pywarper#installation"
+    )
+    print(_WARN_MSG)
 
 
-def fit_surface(
+def fit_sac_surface(
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
@@ -527,7 +555,7 @@ def align_mapped_surface(
     return mappedMaxPositions
 
 
-def build_sac_mapping(
+def build_mapping(
     on_sac_surface: np.ndarray, # original `thisVZminmesh`  (ON‑Starburst layer)
     off_sac_surface: np.ndarray, # original `thisVZmaxmesh`  (OFF‑Starburst layer)
     arbor_xy_bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`

@@ -1,3 +1,35 @@
+"""
+pywarper.arbor
+==============
+Spatial warping and profiling utilities for **neuronal arbor reconstructions**.
+
+This module takes a neuronal tree (nodes+edges) and the previously‑computed
+ON/OFF Starburst Amacrine Cell (SAC) surface mapping in order to
+
+1. **Warp the arbor into the flattened SAC coordinate frame** (`warp_arbor`).
+   Each node is locally re‑registered with a polynomial least‑squares fit
+   (`local_ls_registration`) that references both SAC layers so that depth is
+   preserved relative to the curved retina.
+2. **Compute depth (z) profiles** (`get_zprofile`).  Edge lengths are first binned
+   directly (histogram) and then re‑estimated with a Kaiser–Bessel gridding
+   kernel to obtain a smooth 1‑D density across the inner plexiform layer.
+3. **Compute planar (xy) density maps** (`get_xyprofile`).  Dendritic length is
+   accumulated on a user‑defined 2‑D grid and optionally Gaussian‑smoothed for
+   visualisation or group statistics.
+
+Key algorithms
+--------------
+* **Polynomial local registration** – For every node we fit a 2‑D polynomial
+  basis (up to a configurable `max_order`) to the positions of neighbouring
+  SAC‑band sample points, solving three separate least‑squares systems in one
+  go with `numpy.linalg.lstsq`.  A single **KDTree** (SciPy) accelerates the
+  neighbourhood queries.
+* **Kaiser–Bessel gridding** – The 1‑D `gridder1d` function emulates the
+  non‑uniform FFT gridding scheme used by older MATLAB code, yielding the exact
+  same numerical output but in fully vectorised NumPy.
+"""
+
+
 import time
 from typing import Optional, Union
 
@@ -6,6 +38,7 @@ from numpy.linalg import lstsq
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
+from skeliner.core import Skeleton, Soma
 
 
 def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
@@ -128,6 +161,7 @@ def warp_arbor(
     nodes: np.ndarray,
     edges: np.ndarray,
     radii: np.ndarray,
+    # ntype: np.ndarray,
     surface_mapping: dict,
     voxel_resolution: Union[float, list] = [1., 1., 1.],
     conformal_jump: int = 1,
@@ -268,6 +302,22 @@ def warp_arbor(
         'med_z_on': med_z_on,
         'med_z_off': med_z_off,
     }
+
+    # warped_arbor = {
+    #     "skel": Skeleton(
+    #         soma=Soma.from_sphere(
+    #             centre=warped_nodes[0] * voxel_resolution,
+    #             radius=radii[0],
+    #             verts=None,
+    #         ),
+    #         nodes=warped_nodes * voxel_resolution,
+    #         edges=edges if edges[0, 1] == -1 else np.vstack((edges, [1, -1])),  # add soma if missing
+    #         radii={"median": radii, "mean": radii, "trim": radii},
+    #         ntype=ntype if ntype is not None else np.zeros(warped_nodes.shape[0], dtype=int),
+    #         ),
+    #      'med_z_on': med_z_on,
+    #      'med_z_off': med_z_off,            
+    #     }
 
     return warped_arbor
 
