@@ -48,7 +48,7 @@ def test_warper():
     cell_path = "./tests/data/Image013-009_01_raw_latest_Uygar.swc"
     voxel_resolution = [0.4, 0.4, 0.5]
     w = Warper(off_sac, on_sac, cell_path, voxel_resolution=voxel_resolution, verbose=False)
-    w.nodes += 1  # unnecessary, but to match the matlab behavior
+    w.skel.nodes += 1  # unnecessary, but to match the matlab behavior
     w.fit_surfaces()
     w.build_mapping()
     w.warp_arbor()
@@ -56,7 +56,7 @@ def test_warper():
     warped_arbor_mat = scipy.io.loadmat("./tests/data/warpedArbor_jump.mat", squeeze_me=True, struct_as_record=False)
     warped_nodes_mat = warped_arbor_mat["warpedArbor"].nodes
 
-    assert np.allclose(w.warped_arbor["nodes"], warped_nodes_mat, rtol=1e-5, atol=1e-8), "Warped nodes do not match expected values."
-    assert np.isclose(w.warped_arbor["medVZmin"], warped_arbor_mat["warpedArbor"].medVZmin), "Minimum VZ does not match expected value."
-    assert np.isclose(w.warped_arbor["medVZmax"], warped_arbor_mat["warpedArbor"].medVZmax), "Maximum VZ does not match expected value."
-    assert w.warped_arbor["medVZmin"] < w.warped_arbor["medVZmax"], "Minimum VZ should be less than maximum VZ."
+    assert np.allclose(w.warped_arbor.nodes, warped_nodes_mat, rtol=1e-5, atol=1e-8), "Warped nodes do not match expected values."
+    assert np.isclose(w.warped_arbor.extra["med_z_on"], warped_arbor_mat["warpedArbor"].medVZmin), "Minimum VZ does not match expected value."
+    assert np.isclose(w.warped_arbor.extra["med_z_off"], warped_arbor_mat["warpedArbor"].medVZmax), "Maximum VZ does not match expected value."
+    assert w.warped_arbor.extra["med_z_on"] < w.warped_arbor.extra["med_z_off"], "Minimum VZ should be less than maximum VZ."
