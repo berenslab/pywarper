@@ -55,6 +55,16 @@ class Warper:
 
         return self
 
+    @staticmethod
+    def _as_xyz(data) -> tuple[np.ndarray, np.ndarray, np.ndarray]: # for load_sac()
+        """Accept *dict* or tuple and return *(x, y, z)* numpy arrays."""
+        if isinstance(data, dict):
+            return np.asarray(data["x"]), np.asarray(data["y"]), np.asarray(data["z"])
+        if isinstance(data, (tuple, list)) and len(data) == 3:
+            return map(np.asarray, data)  # type: ignore[arg-type]
+        raise TypeError("SAC data must be a mapping with keys x/y/z or a 3‑tuple of arrays.")
+
+
     def load_sac(self, off_sac, on_sac) -> "Warper":
         """Load the SAC meshes from *off_sac* and *on_sac*."""
         if self.verbose:
@@ -137,34 +147,38 @@ class Warper:
         )
         return self
 
-    def warp_arbor(self, conformal_jump: int = 2) -> "Warper":
+    def warp_arbor(self, voxel_resolution: list[float] | None = None, conformal_jump: int = 2) -> "Warper":
         """Apply the mapping to the arbor."""
         if self.mapping is None:
             raise RuntimeError("Mapping missing. Call build_mapping() first.")
+        
+        if voxel_resolution is None:
+            voxel_resolution = self.voxel_resolution
+
         if self.verbose:
             print("[pywarper] Warping arbor …")
         self.warped_arbor = warp_arbor(
             self.skel,
             self.mapping,
-            voxel_resolution=self.voxel_resolution,
+            voxel_resolution=voxel_resolution,
             conformal_jump=conformal_jump,
             verbose=self.verbose,
         )
         return self
 
     # ---------------------------- Stats ----------------------------------
-    def get_arbor_denstiy(
+    def get_arbor_density(
             self, 
             z_res: float = 1, 
-            z_window: float | None = None,
+            z_window: list[float] | None = None,
             z_nbins: int = 120,
-            xy_window: float | None = None,
+            xy_window: list[float] | None = None,
             xy_nbins: int = 20,
             xy_sigma_bins: float = 1.
     ) -> "Warper":
         """Return depth profile as in *get_zprofile*."""
         if self.warped_arbor is None:
-            raise RuntimeError("Arbor not warped yet. Call warp().")
+            raise RuntimeError("Arbor not warped yet.")
         z_x, z_dist, z_hist, normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window, nbins=z_nbins)
         self.z_x: np.ndarray = z_x
         self.z_dist: np.ndarray = z_dist
@@ -180,17 +194,6 @@ class Warper:
         self.xy_hist: np.ndarray = xy_hist
 
         return self
-
-
-    @staticmethod
-    def _as_xyz(data) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Accept *dict* or tuple and return *(x, y, z)* numpy arrays."""
-        if isinstance(data, dict):
-            return np.asarray(data["x"]), np.asarray(data["y"]), np.asarray(data["z"])
-        if isinstance(data, (tuple, list)) and len(data) == 3:
-            return map(np.asarray, data)  # type: ignore[arg-type]
-        raise TypeError("SAC data must be a mapping with keys x/y/z or a 3‑tuple of arrays.")
-
 
     def stats(self):
 
