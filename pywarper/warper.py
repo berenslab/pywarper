@@ -88,17 +88,26 @@ class Warper:
 
     # ---------------------------- Core -----------------------------------
 
-    def fit_surfaces(self, smoothness: int = 15) -> "Warper":
+    def fit_surfaces(self, xmax=None, ymax=None, smoothness: int = 15) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
             print("[pywarper] Fitting OFF‑SAC surface …")
+
         self.off_sac_surface, *_ = fit_sac_surface(
-            x=self.off_sac[0], y=self.off_sac[1], z=self.off_sac[2], smoothness=smoothness
+            x=self.off_sac[0], 
+            y=self.off_sac[1],
+            z=self.off_sac[2], 
+            smoothness=smoothness,
+            xmax=xmax, ymax=ymax,
         )
         if self.verbose:
             print("[pywarper] Fitting ON‑SAC surface …")
         self.on_sac_surface, *_ = fit_sac_surface(
-            x=self.on_sac[0], y=self.on_sac[1], z=self.on_sac[2], smoothness=smoothness
+            x=self.on_sac[0], 
+            y=self.on_sac[1], 
+            z=self.on_sac[2], 
+            smoothness=smoothness,
+            xmax=xmax, ymax=ymax,
         )
         return self
 
