@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pywarper"
-version = "0.1.6"
+version = "0.1.7"
 description = "Conformal mapping-based warping of neuronal arbor morphologies."
 authors = []
 requires-python = ">=3.10.0"
@@ -14,7 +14,7 @@ dependencies = [
     "pandas>=2.2.3",
     "pygridfit>=0.1.4",
     "scipy>=1.13.1",
-    "skeliner>=0.1.0",
+    "skeliner>=0.1.2",
     "watermark>=2.5.0",
 ]
 readme = {file = "README.md", content-type = "text/markdown"}

@@ -444,7 +444,7 @@ def get_zprofile(
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0, 
     nbins: int = 120, 
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, Skeleton]:
+) -> Skeleton:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped arbor.
 
@@ -540,22 +540,35 @@ def get_zprofile(
     # normed_arbor = {**warped_arbor, "nodes": nodes_norm}
 
     skel.soma.centre = nodes_norm[0]
+    extra = {
+        "z_profile": {
+            "z_x": x_um,
+            "z_dist": z_dist,
+            "z_hist": z_hist,
+            "z_res": z_res,
+            "z_window": [z_min, z_max],
+            "on_sac_pos": on_sac_pos,
+            "off_sac_pos": off_sac_pos,
+        }
+    }
+
     skel_norm = Skeleton(
         soma   = skel.soma,
         nodes  = nodes_norm,
         edges  = skel.edges,
         radii  = skel.radii,
         ntype  = skel.ntype,
+        extra = extra,
     )
 
-    return x_um, z_dist, z_hist, skel_norm
+    return skel_norm
 
 def get_xyprofile(
     skel: Skeleton,       
     xy_window: Optional[list[float]] = None,
     nbins: int = 20,
     sigma_bins: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Skeleton:
     """
     2-D dendritic-length density on a fixed XY grid (no per-cell rotation).
 
@@ -606,4 +619,14 @@ def get_xyprofile(
     x = 0.5 * (x_edges[:-1] + x_edges[1:])
     y = 0.5 * (y_edges[:-1] + y_edges[1:])
 
-    return x, y, xy_dist, xy_hist
+    skel.extra["xy_profile"] = {
+        "xy_x": x,
+        "xy_y": y,
+        "xy_dist": xy_dist,
+        "xy_hist": xy_hist,
+        "xy_window": [xmin, xmax, ymin, ymax],
+        "xy_nbins": nbins,
+        "xy_sigma_bins": sigma_bins,
+    }
+
+    return skel

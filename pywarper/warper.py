@@ -179,19 +179,11 @@ class Warper:
         """Return depth profile as in *get_zprofile*."""
         if self.warped_arbor is None:
             raise RuntimeError("Arbor not warped yet.")
-        z_x, z_dist, z_hist, normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window, nbins=z_nbins)
-        self.z_x: np.ndarray = z_x
-        self.z_dist: np.ndarray = z_dist
-        self.z_hist: np.ndarray = z_hist
-        self.normed_arbor = normed_arbor
+        self.normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window, nbins=z_nbins)
 
-        xy_x, xy_y, xy_dist, xy_hist = get_xyprofile(
-            self.warped_arbor, xy_window=xy_window, nbins=xy_nbins, sigma_bins=xy_sigma_bins
+        self.normed_arbor = get_xyprofile(
+            self.normed_arbor, xy_window=xy_window, nbins=xy_nbins, sigma_bins=xy_sigma_bins
         )
-        self.xy_x: np.ndarray = xy_x
-        self.xy_y: np.ndarray = xy_y
-        self.xy_dist: np.ndarray = xy_dist
-        self.xy_hist: np.ndarray = xy_hist
 
         return self
 
