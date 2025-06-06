@@ -293,34 +293,6 @@ def warp_arbor(
     med_z_on = np.median(on_subsampled_depths)
     med_z_off = np.median(off_subsampled_depths)
 
-    # Build output dictionary
-    # warped_arbor = {
-    #     'nodes': warped_nodes * voxel_resolution,
-    #     'edges': edges,
-    #     'radii': radii,
-    #     'med_z_on': med_z_on,
-    #     'med_z_off': med_z_off,
-    # }
-
-
-    # warped_arbor = {
-    #     "skel": Skeleton(
-    #         soma=Soma.from_sphere(
-    #             centre=warped_nodes[0] * voxel_resolution,
-    #             radius=radii[0],
-    #             verts=None,
-    #         ),
-    #         nodes=warped_nodes * voxel_resolution,
-    #         edges=edges if edges[0, 1] == -1 else np.vstack((edges, [1, -1])),  # add soma if missing
-    #         radii={"median": radii, "mean": radii, "trim": radii},
-    #         ntype=ntype if ntype is not None else np.zeros(warped_nodes.shape[0], dtype=int),
-    #         ),
-    #      'med_z_on': med_z_on,
-    #      'med_z_off': med_z_off,            
-    #     }
-
-    # return warped_arbor
-
     skel_warp = Skeleton(
         soma   = skel.soma,                      # untouched
         nodes  = warped * voxel_resolution,
