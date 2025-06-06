@@ -631,22 +631,22 @@ def build_mapping(
 
     # quasi-conformally map individual SAC surfaces to planes
     if verbose:
-        print("Mapping ON (min) surface …")    
+        print("↳ mapping ON (min) surface …")    
         start_time = time.time()
     mapped_on = conformal_map_indep_fixed_diagonals(
         float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled
     )
     if verbose:
-        print(f"Completed in {time.time() - start_time:.2f} seconds.")
+        print(f"    done in {time.time() - start_time:.2f} seconds.")
 
     if verbose:
-        print("Mapping OFF (max) surface …")
+        print("↳ mapping OFF (max) surface …")
         start_time = time.time()
     mapped_off = conformal_map_indep_fixed_diagonals(
         float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled
     )
     if verbose:
-        print(f"Completed in {time.time() - start_time:.2f} seconds.")
+        print(f"    done in {time.time() - start_time:.2f} seconds.")
 
     x_limits = [sampled_x_idx.min(), sampled_x_idx.max()]  # original `xborders`
     y_limits = [sampled_y_idx.min(), sampled_y_idx.max()]  # original `yborders`

@@ -1499,7 +1499,7 @@ wheels = [
 
 [[package]]
 name = "pywarper"
-version = "0.1.5"
+version = "0.1.7"
 source = { editable = "." }
 dependencies = [
     { name = "alphashape" },
@@ -1538,7 +1538,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.4.15" },
     { name = "scipy", specifier = ">=1.13.1" },
-    { name = "skeliner", specifier = ">=0.1.0" },
+    { name = "skeliner", specifier = ">=0.1.2" },
     { name = "twine", marker = "extra == 'dev'" },
     { name = "watermark", specifier = ">=2.5.0" },
 ]
@@ -1979,7 +1979,7 @@ wheels = [
 
 [[package]]
 name = "skeliner"
-version = "0.1.0"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "igraph" },
@@ -1991,9 +1991,9 @@ dependencies = [
     { name = "scipy", version = "1.15.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "trimesh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f0/20/984343773321a611c6123ffce52a6dbc9d144603272cc6815530830d12c1/skeliner-0.1.0.tar.gz", hash = "sha256:67c8caeb29445b0128d529336e9cbbbc68502a428aa2a92eaa60bdad53a7939e", size = 3787903 }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/cf/12ffef65a956901cb560c4cdb6ab8f6bfd0a30b24c55db90f4670eab395b/skeliner-0.1.2.tar.gz", hash = "sha256:73b3a448c0950ac90c77aff781ec6947860545bf6ad43b854b2ba9c4a9c5ca5c", size = 3780018 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e3/6b/82ccad51e7c37e4f8d3137ced9a8b2631201aefb88c2a22a8a338e796a17/skeliner-0.1.0-py3-none-any.whl", hash = "sha256:9ade818aac6484a093baa9ebea021c08878ee056d17d1ab4f7418e9ffb5222f9", size = 44726 },
+    { url = "https://files.pythonhosted.org/packages/5b/41/4773d74fe093688e5edd55da61f43fc491ab85340470ce87d72b170f64a4/skeliner-0.1.2-py3-none-any.whl", hash = "sha256:9207a8b4cead2ed880a53f69b6d3867f88d334389f611b93ec09a5936645c3f4", size = 46029 },
 ]
 
 [[package]]

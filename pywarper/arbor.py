@@ -283,11 +283,11 @@ def warp_arbor(
 
     # Apply local least-squares registration to each node
     if verbose:
-        print("Warping nodes...")
+        print("[pywarper] Warping arbor...")
         start_time = time.time()
     warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
     if verbose:
-        print(f"Nodes warped in {time.time() - start_time:.2f} seconds.")
+        print(f"    done in {time.time() - start_time:.2f} seconds.")
 
     # Compute median Z-planes
     med_z_on = np.median(on_subsampled_depths)

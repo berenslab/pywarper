@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 import numpy as np
@@ -101,8 +102,9 @@ class Warper:
     def fit_surfaces(self, xmax=None, ymax=None, smoothness: int = 15) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
-            print("[pywarper] Fitting OFF‑SAC surface …")
+            print("[pywarper] Fitting SAC surfaces …")
 
+        _t0 = time.time()
         self.off_sac_surface, *_ = fit_sac_surface(
             x=self.off_sac[0], 
             y=self.off_sac[1],
@@ -111,7 +113,9 @@ class Warper:
             xmax=xmax, ymax=ymax,
         )
         if self.verbose:
-            print("[pywarper] Fitting ON‑SAC surface …")
+            print(f"↳ fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds.")
+        
+        _t0 = time.time()
         self.on_sac_surface, *_ = fit_sac_surface(
             x=self.on_sac[0], 
             y=self.on_sac[1], 
@@ -119,6 +123,8 @@ class Warper:
             smoothness=smoothness,
             xmax=xmax, ymax=ymax,
         )
+        if self.verbose:
+            print(f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds.")
         return self
 
     def build_mapping(self, bounds:np.ndarray | tuple | None = None, conformal_jump: int = 2) -> "Warper":
@@ -155,8 +161,6 @@ class Warper:
         if voxel_resolution is None:
             voxel_resolution = self.voxel_resolution
 
-        if self.verbose:
-            print("[pywarper] Warping arbor …")
         self.warped_arbor = warp_arbor(
             self.skel,
             self.mapping,
