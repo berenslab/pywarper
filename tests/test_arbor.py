@@ -1,10 +1,10 @@
 import numpy as np
-import pandas as pd
 import scipy.io
 import skeliner as sk
 
 from pywarper.arbor import warp_arbor
 from pywarper.surface import build_mapping, fit_sac_surface
+from pywarper.utils import read_sumbul_et_al_chat_bands
 
 
 def test_arbor():
@@ -13,23 +13,11 @@ def test_arbor():
 
     Given the same input, the output of the Python code should match the output of the MATLAB code.
     """
-    
-    def read_ChAT(filename):
-        
-        df = pd.read_csv(filename, comment='#', sep=r'\s+')
-        x = df["X"].values.astype(float)
-        y = df["Slice"].values.astype(float)
-        z = df["Y"].values.astype(float)
 
-        x = x + 1
-        z = z + 1
-
-        return x, y ,z
-    
-    chat_top = read_ChAT("./tests/data/Image013-009_01_ChAT-TopBand-Mike.txt") # should be the off sac layer
-    chat_bottom = read_ChAT("./tests/data/Image013-009_01_ChAT-BottomBand-Mike.txt") # should be the on sac layer
+    chat_top = read_sumbul_et_al_chat_bands("./tests/data/Image013-009_01_ChAT-TopBand-Mike.txt") # should be the off sac layer
+    chat_bottom = read_sumbul_et_al_chat_bands("./tests/data/Image013-009_01_ChAT-BottomBand-Mike.txt") # should be the on sac layer
     # but the image can be flipped
-    if chat_top[2].mean() > chat_bottom[2].mean():
+    if chat_top["z"].mean() > chat_bottom["z"].mean():
         off_sac = chat_top
         on_sac = chat_bottom
     else:
@@ -41,8 +29,8 @@ def test_arbor():
     # +1 to match MATLAB indexing (1-based)
     skel.nodes += 1
 
-    off_sac_surface, _, _ = fit_sac_surface(x=off_sac[0], y=off_sac[1], z=off_sac[2], smoothness=15)
-    on_sac_surface, _, _ = fit_sac_surface(x=on_sac[0], y=on_sac[1], z=on_sac[2], smoothness=15)
+    off_sac_surface, _, _ = fit_sac_surface(x=off_sac['x'], y=off_sac['y'], z=off_sac['z'], smoothness=15)
+    on_sac_surface, _, _ = fit_sac_surface(x=on_sac['x'], y=on_sac['y'], z=on_sac['z'], smoothness=15)
     arbor_boundaries = np.array([skel.nodes[:, 0].min(), skel.nodes[:, 0].max(), skel.nodes[:, 1].min(), skel.nodes[:, 1].max()])
     surface_mapping = build_mapping(on_sac_surface, off_sac_surface, arbor_boundaries, conformal_jump=2, verbose=True)
     
