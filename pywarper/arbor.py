@@ -34,11 +34,12 @@ import time
 from typing import Optional, Union
 
 import numpy as np
+import trimesh
 from numpy.linalg import lstsq
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
-from skeliner.core import Skeleton, Soma, _bfs_parents
+from skeliner.core import Skeleton, _bfs_parents
 
 
 def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
@@ -156,73 +157,13 @@ def local_ls_registration(
 
     return transformed_nodes
 
-
-def warp_arbor(
-    skel: Skeleton,
-    surface_mapping: dict,
-    voxel_resolution: Union[float, list] = [1., 1., 1.],
-    conformal_jump: int = 1,
-    verbose: bool = False
-) -> Skeleton:
-    """
-    Applies a local surface flattening (warp) to a neuronal arbor using the results
-    of previously computed surface mappings.
-
-    Parameters
-    ----------
-    nodes : np.ndarray
-        (N, 3) array of [x, y, z] coordinates for the arbor to be warped.
-    edges : np.ndarray
-        (E, 2) array of indices defining connectivity between nodes.
-    radii : np.ndarray
-        (N,) array of radii corresponding to each node.
-    surface_mapping : dict
-        Dictionary containing keys:
-          - "mapped_min_positions" : np.ndarray
-              (X*Y, 2) mapped coordinates for one surface band (e.g., "min" band).
-          - "mapped_max_positions" : np.ndarray
-              (X*Y, 2) mapped coordinates for the other surface band (e.g., "max" band).
-          - "thisVZminmesh" : np.ndarray
-              (X, Y) mesh representing the first surface (“min” band) in 3D space.
-          - "thisVZmaxmesh" : np.ndarray
-              (X, Y) mesh representing the second surface (“max” band) in 3D space.
-          - "thisx" : np.ndarray
-              1D array of x-indices (possibly downsampled) used during mapping.
-          - "thisy" : np.ndarray
-              1D array of y-indices (possibly downsampled) used during mapping.
-    conformal_jump : int, default=1
-        Step size used in the conformal mapping (downsampling factor).
-    verbose : bool, default=False
-        If True, prints timing and progress information.
-
-    Returns
-    -------
-    dict
-        Dictionary containing:
-          - "nodes": np.ndarray
-              (N, 3) warped [x, y, z] coordinates after applying local registration.
-          - "edges": np.ndarray
-              (E, 2) connectivity array (passed through unchanged).
-          - "radii": np.ndarray
-              (N,) radii array (passed through unchanged).
-          - "medVZmin": float
-              Median z-value of the “min” surface mesh within the region of interest.
-          - "medVZmax": float
-              Median z-value of the “max” surface mesh within the region of interest.
-
-    Notes
-    -----
-    1. The function extracts a subregion of the surfaces according to thisx/thisy and
-       conformal_jump, matching the flattening step used in the mapping.
-    2. Each node in `nodes` is then warped via local least-squares registration
-       (`local_ls_registration`), referencing top (min) and bottom (max) surfaces.
-    3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
-       reference planes in further analyses.
-    """
-
-    nodes = skel.nodes.astype(float)
-
-    # Unpack mappings and surfaces
+def warp_nodes(
+        nodes: np.ndarray,
+        surface_mapping: dict,
+        conformal_jump: int = 1,
+) -> tuple[np.ndarray, float, float]:
+    
+        # Unpack mappings and surfaces
     mapped_on = surface_mapping["mapped_on"]
     mapped_off = surface_mapping["mapped_off"]
     on_sac_surface = surface_mapping["on_sac_surface"]
@@ -282,31 +223,230 @@ def warp_arbor(
     # return top_input_pos, bot_input_pos, top_output_pos, bot_output_pos
 
     # Apply local least-squares registration to each node
-    if verbose:
-        print("[pywarper] Warping arbor...")
-        start_time = time.time()
     warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
-    if verbose:
-        print(f"    done in {time.time() - start_time:.2f} seconds.")
-
+    
     # Compute median Z-planes
     med_z_on = np.median(on_subsampled_depths)
     med_z_off = np.median(off_subsampled_depths)
 
-    skel_warp = Skeleton(
-        soma   = skel.soma,                      # untouched
-        nodes  = warped * voxel_resolution,
-        edges  = skel.edges,                     # same connectivity
-        radii  = skel.radii,                     # same dict
-        ntype  = skel.ntype,
+    return warped, med_z_on, med_z_off
+
+def normalize_nodes(
+    nodes: np.ndarray,
+    med_z_on: float,
+    med_z_off: float,
+    on_sac_pos: float = 0.0,
+    off_sac_pos: float = 12.0,
+) -> np.ndarray:
+    """
+    Normalize the z-coordinates of nodes based on the median z-values
+    of the ON and OFF SAC surfaces.
+    This function rescales the z-coordinates of the nodes to a normalized
+    space where the ON SAC surface is at `on_sac_pos` and the OFF SAC
+    surface is at `off_sac_pos`. The z-coordinates are adjusted based on
+    the provided median z-values of the ON and OFF SAC surfaces.
+    Parameters
+    ----------
+    nodes : np.ndarray
+        (N, 3) array of [x, y, z] coordinates for the nodes to be normalized.
+    med_z_on : float            
+        Median z-value of the ON SAC surface.
+    med_z_off : float
+        Median z-value of the OFF SAC surface.
+    on_sac_pos : float, default=0.0
+        Desired position of the ON SAC surface in the normalized space (µm).
+    off_sac_pos : float, default=12.0
+        Desired position of the OFF SAC surface in the normalized space (µm).
+    z_res : float, default=1.0
+        Spatial resolution along z (µm / voxel) after warping.
+    Returns
+    -------
+    np.ndarray
+        (N, 3) array of [x, y, z] coordinates with normalized z-coordinates.
+    """ 
+    normalized_nodes = nodes.copy().astype(float)
+
+    # Compute the relative depth of each node
+    rel_depth = (nodes[:, 2] - med_z_on) / (med_z_off - med_z_on)  # 0→ON, 1→OFF
+
+    # Rescale the z-coordinates to the normalized space
+    z_phys = on_sac_pos + rel_depth * (off_sac_pos - on_sac_pos)  # µm in global frame
+    normalized_nodes[:, 2] = z_phys  # update the z-coordinate to the flattened space
+
+    return normalized_nodes
+
+
+def warp_arbor(
+    skel: Skeleton,
+    surface_mapping: dict,
+    voxel_resolution: Union[float, list] = [1., 1., 1.],
+    conformal_jump: int = 1,
+    on_sac_pos: float = 0.0,
+    off_sac_pos: float = 12.0,
+    zprofile_extends: list[float] | None = None, # [z_min, z_max]
+    zprofile_nbins: int = 120,
+    xyprofile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
+    xyprofile_nbins: int = 20,
+    xyprofile_smooth: float = 1.0,
+    verbose: bool = False,
+) -> Skeleton:
+    """
+    Applies a local surface flattening (warp) to a neuronal arbor using the results
+    of previously computed surface mappings.
+
+    Parameters
+    ----------
+    nodes : np.ndarray
+        (N, 3) array of [x, y, z] coordinates for the arbor to be warped.
+    edges : np.ndarray
+        (E, 2) array of indices defining connectivity between nodes.
+    radii : np.ndarray
+        (N,) array of radii corresponding to each node.
+    surface_mapping : dict
+        Dictionary containing keys:
+          - "mapped_min_positions" : np.ndarray
+              (X*Y, 2) mapped coordinates for one surface band (e.g., "min" band).
+          - "mapped_max_positions" : np.ndarray
+              (X*Y, 2) mapped coordinates for the other surface band (e.g., "max" band).
+          - "thisVZminmesh" : np.ndarray
+              (X, Y) mesh representing the first surface (“min” band) in 3D space.
+          - "thisVZmaxmesh" : np.ndarray
+              (X, Y) mesh representing the second surface (“max” band) in 3D space.
+          - "thisx" : np.ndarray
+              1D array of x-indices (possibly downsampled) used during mapping.
+          - "thisy" : np.ndarray
+              1D array of y-indices (possibly downsampled) used during mapping.
+    conformal_jump : int, default=1
+        Step size used in the conformal mapping (downsampling factor).
+    verbose : bool, default=False
+        If True, prints timing and progress information.
+
+    Returns
+    -------
+    dict
+        Dictionary containing:
+          - "nodes": np.ndarray
+              (N, 3) warped [x, y, z] coordinates after applying local registration.
+          - "edges": np.ndarray
+              (E, 2) connectivity array (passed through unchanged).
+          - "radii": np.ndarray
+              (N,) radii array (passed through unchanged).
+          - "medVZmin": float
+              Median z-value of the “min” surface mesh within the region of interest.
+          - "medVZmax": float
+              Median z-value of the “max” surface mesh within the region of interest.
+
+    Notes
+    -----
+    1. The function extracts a subregion of the surfaces according to thisx/thisy and
+       conformal_jump, matching the flattening step used in the mapping.
+    2. Each node in `nodes` is then warped via local least-squares registration
+       (`local_ls_registration`), referencing top (min) and bottom (max) surfaces.
+    3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
+       reference planes in further analyses.
+    """
+
+    nodes = skel.nodes.astype(float)
+
+    if verbose:
+        print("[pywarper] Warping arbor...")
+        start_time = time.time()
+    warped_nodes, med_z_on, med_z_off = warp_nodes(
+        nodes,
+        surface_mapping,
+        conformal_jump=conformal_jump,
     )
-    skel_warp.extra = {          # optional – keep depth anchors
+
+    normalized_nodes = normalize_nodes(
+        warped_nodes,
+        med_z_on=med_z_on,
+        med_z_off=med_z_off,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+    )
+
+    if verbose:
+        print(f"    done in {time.time() - start_time:.2f} seconds.")
+
+    soma = skel.soma
+    soma.centre = normalized_nodes[0] * voxel_resolution  # soma is at the first node
+
+    skel_norm = Skeleton(
+        soma   = soma,                     
+        nodes  = normalized_nodes * voxel_resolution,
+        edges  = skel.edges,      # same connectivity
+        radii  = skel.radii,      # same radii dict
+        ntype  = skel.ntype,      # same node types (if any) 
+    )
+
+
+    z_profile = get_zprofile(skel_norm, z_window=zprofile_extends, nbins=zprofile_nbins)
+    xy_profile = get_xyprofile(
+        skel_norm, xy_window=xyprofile_extends, nbins=xyprofile_nbins, sigma_bins=xyprofile_smooth
+    )
+
+    skel_norm.extra = {          # keep the pre-normed nodes for reference
+        "warped_nodes": warped_nodes * voxel_resolution,
         "med_z_on":  float(med_z_on),
         "med_z_off": float(med_z_off),
+        "z_profile": z_profile,
+        "xy_profile": xy_profile,
     }
 
-    return skel_warp
+    return skel_norm
 
+def warp_mesh(
+    mesh: trimesh.Trimesh,
+    surface_mapping: dict,
+    conformal_jump: int = 1,
+    on_sac_pos: float = 0.0, # μm
+    off_sac_pos: float = 12.0, # μm
+    mesh_vertices_scale: float = 1.0,
+    verbose: bool = False,
+) -> trimesh.Trimesh:
+    """
+    Applies a local surface flattening (warp) to a 3D mesh using the results
+    of previously computed surface mappings.
+    """
+
+    nodes = mesh.vertices.astype(float) * mesh_vertices_scale
+
+    if verbose:
+        print("[pywarper] Warping mesh...")
+        start_time = time.time()
+    warped_nodes, med_z_on, med_z_off = warp_nodes(
+        nodes,
+        surface_mapping,
+        conformal_jump=conformal_jump,
+    )
+
+    normalized_nodes = normalize_nodes(
+        warped_nodes,
+        med_z_on=med_z_on,
+        med_z_off=med_z_off,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+    )
+
+    if verbose:
+        print(f"    done in {time.time() - start_time:.2f} seconds.")
+
+    # Create a new mesh with the warped vertices
+    warped_mesh = trimesh.Trimesh(
+        vertices=normalized_nodes / mesh_vertices_scale, # rescale back to original units
+        faces=mesh.faces,
+        vertex_normals=None,  # keep normals
+        process=False,        # no processing
+    )
+    warped_mesh.metadata = mesh.metadata.copy()  # copy metadata
+    warped_mesh.metadata["med_z_on"] = float(med_z_on)
+    warped_mesh.metadata["med_z_off"] = float(med_z_off)
+    warped_mesh.metadata["conformal_jump"] = conformal_jump
+    warped_mesh.metadata["surface_mapping"] = surface_mapping
+    warped_mesh.metadata["on_sac_pos"] = on_sac_pos
+    warped_mesh.metadata["off_sac_pos"] = off_sac_pos
+
+    return warped_mesh
 # =====================================================================
 # helpers for get_zprofile()
 # =====================================================================
@@ -411,12 +551,9 @@ def gridder1d(
 
 def get_zprofile(
     skel: Skeleton,
-    z_res: float = 1.0,          
     z_window: Optional[list[float]] = None,
-    on_sac_pos: float = 0.0,
-    off_sac_pos: float = 12.0, 
     nbins: int = 120, 
-) -> Skeleton:
+) -> dict:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped arbor.
 
@@ -452,13 +589,13 @@ def get_zprofile(
         Dendritic length contained in each bin (same units as input nodes).
     z_hist
         Histogram-based Dendritic length (same units as input nodes).
-    normed_arbor
-        copy of the input arbor whose z-coordinates have
-                    already been rescaled to the requested frame
+    z_window
+        The actual z-window used for this cell, in the form
+        ``[z_min, z_max]`` (µm).  If ``z_window`` was not specified,
+        this will be the auto-computed span.
     """
 
     # 0) decide the common span
-    dz_onoff = off_sac_pos - on_sac_pos          # 12 µm by default
     if z_window is None:
         z_min, z_max = None, None                  # auto-span
     else:
@@ -467,34 +604,18 @@ def get_zprofile(
     # 1) edge lengths and mid-point nodes   
     density, nodes = segment_lengths(skel)
 
-
-    has_surfaces = (
-        skel.extra.get("med_z_on") is not None and
-        skel.extra.get("med_z_off") is not None
-    )
-
-    if has_surfaces:
-        med_z_on = skel.extra["med_z_on"]
-        med_z_off = skel.extra["med_z_off"]
-        rel_depth = (nodes[:, 2] / z_res - med_z_on) / (med_z_off - med_z_on)  # 0→ON, 1→OFF
-        z_phys = on_sac_pos + rel_depth * dz_onoff                # µm in global frame
-
-    else:
-        z_phys = nodes[:, 2] 
-        z_res = 1.0
-
     # 2) decide bin edges *once*
+    z_phys = nodes[:, 2]                         # physical z-coordinates (µm)
     if z_min is None or z_max is None:
         # grow just enough to contain this cell, then round to one bin
-        z_min = np.floor(z_phys.min() / dz_onoff * nbins) * dz_onoff / nbins
-        z_max = np.ceil (z_phys.max() / dz_onoff * nbins) * dz_onoff / nbins
+        z_min = np.floor(z_phys.min())
+        z_max = np.ceil(z_phys.max())
 
     bin_edges = np.linspace(z_min, z_max, nbins + 1)
 
     # 3) histogram-based z profile
     z_hist, _ = np.histogram(z_phys, bins=bin_edges, weights=density)
-    z_hist *= density.sum() / (z_hist.sum() * z_res)
-
+    z_hist *= density.sum() / (z_hist.sum())
 
     # 4) Kaiser–Bessel gridded version (needs centred –0.5…0.5 inputs) 
     centre = (z_min + z_max) / 2
@@ -502,45 +623,26 @@ def get_zprofile(
     z_samples = (z_phys - centre) / halfspan # now in [-1, 1]
 
     z_dist = gridder1d(z_samples / 2, density, nbins)  # /2 → [-0.5, 0.5]
-    z_dist *= density.sum() / (z_dist.sum() * z_res)
+    z_dist *= density.sum() / (z_dist.sum())
 
     # 5) bin centres & rescaled arbor
     x_um = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
 
-    nodes_norm = skel.nodes.copy()
-    nodes_norm[:, 2] = z_phys
-    # normed_arbor = {**warped_arbor, "nodes": nodes_norm}
-
-    skel.soma.centre = nodes_norm[0]
-    extra = {
-        "z_profile": {
+    res = {
             "z_x": x_um,
             "z_dist": z_dist,
             "z_hist": z_hist,
-            "z_res": z_res,
             "z_window": [z_min, z_max],
-            "on_sac_pos": on_sac_pos,
-            "off_sac_pos": off_sac_pos,
         }
-    }
 
-    skel_norm = Skeleton(
-        soma   = skel.soma,
-        nodes  = nodes_norm,
-        edges  = skel.edges,
-        radii  = skel.radii,
-        ntype  = skel.ntype,
-        extra = extra,
-    )
-
-    return skel_norm
+    return res
 
 def get_xyprofile(
     skel: Skeleton,       
     xy_window: Optional[list[float]] = None,
     nbins: int = 20,
     sigma_bins: float = 1.0,
-) -> Skeleton:
+) -> dict:
     """
     2-D dendritic-length density on a fixed XY grid (no per-cell rotation).
 
@@ -591,7 +693,7 @@ def get_xyprofile(
     x = 0.5 * (x_edges[:-1] + x_edges[1:])
     y = 0.5 * (y_edges[:-1] + y_edges[1:])
 
-    skel.extra["xy_profile"] = {
+    res = {
         "xy_x": x,
         "xy_y": y,
         "xy_dist": xy_dist,
@@ -601,4 +703,4 @@ def get_xyprofile(
         "xy_sigma_bins": sigma_bins,
     }
 
-    return skel
+    return res
