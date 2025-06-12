@@ -329,7 +329,9 @@ def conformal_map_indep_fixed_diagonals(
     skewDiagDist: float,
     xpos: np.ndarray,
     ypos: np.ndarray,
-    VZmesh: np.ndarray
+    VZmesh: np.ndarray,
+    *,
+    n_anchors: int = 16        # 4, 8 (default) or 16
 ) -> np.ndarray:
     """
     Creates a quasi-conformal 2D mapping of the surface in VZmesh. 
@@ -348,7 +350,13 @@ def conformal_map_indep_fixed_diagonals(
         1D array of y-coordinates (length N).
     VZmesh : np.ndarray
         2D array of shape (M, N), representing z-values for each (x, y).
-
+    n_anchors : int, default=16
+        Number of anchor points to use for the conformal mapping.
+        Options are 4, 8 (default), or 16 anchors.
+            - 4   → original behaviour (two separate solves, then average)  
+            - 8   → add horizontal/vertical mid-lines (single solve)  
+            - 16  → also add the quarter-lines (single solve)
+        
     Returns
     -------
     mappedPositions : np.ndarray
@@ -365,88 +373,151 @@ def conformal_map_indep_fixed_diagonals(
     M, N = VZmesh.shape
     xpos_new = xpos + 1
     ypos_new = ypos + 1
-    vertexCount = M * N
+    vertexCount   = M * N
     triangleCount = (2 * M - 2) * (N - 1)
 
-    # --- build triangulation -------------------------------------------------
-    col1 = np.kron([1, 1], np.arange(M - 1))
-    temp1 = np.kron([1, M + 1], np.ones(M - 1))
-    temp2 = np.kron([M + 1, M], np.ones(M - 1))
-    one_column = np.stack([col1, col1 + temp1, col1 + temp2], axis=1).astype(int)
+    # -----------------------------------------------------------
+    # 1. triangulation on the regular grid
+    # -----------------------------------------------------------
+    col1   = np.kron([1, 1], np.arange(M - 1))
+    temp1  = np.kron([1, M + 1], np.ones(M - 1))
+    temp2  = np.kron([M + 1, M], np.ones(M - 1))
+    onecol = np.stack([col1, col1 + temp1, col1 + temp2], axis=1).astype(int)
 
-    triangulation = np.tile(one_column, (N - 1, 1))
-    offsets = np.repeat(np.arange(N - 1), 2 * M - 2)[:, None] * M
-    triangulation += offsets
-    # triangulation.shape == (triangleCount, 3)
-
-    # --- vectorised local-coordinate calculation ----------------------------
+    triangulation = np.tile(onecol, (N - 1, 1))
+    triangulation += np.repeat(np.arange(N - 1), 2 * M - 2)[:, None] * M
     rows = triangulation % M
     cols = triangulation // M
 
-    triangles_xyz = np.empty((triangleCount, 3, 3), dtype=np.float64)
-    triangles_xyz[:, :, 0] = xpos_new[rows]
-    triangles_xyz[:, :, 1] = ypos_new[cols]
-    triangles_xyz[:, :, 2] = VZmesh[rows, cols]
+    # -----------------------------------------------------------
+    # 2. complex local coordinates
+    # -----------------------------------------------------------
+    tri_xyz = np.empty((triangleCount, 3, 3), dtype=np.float64)
+    tri_xyz[:, :, 0] = xpos_new[rows]
+    tri_xyz[:, :, 1] = ypos_new[cols]
+    tri_xyz[:, :, 2] = VZmesh[rows, cols]
 
-    w1, w2, w3, zeta = assign_local_coordinates(triangles_xyz)
+    w1, w2, w3, zeta = assign_local_coordinates(tri_xyz)
     denom = np.sqrt(zeta / 2.0)
 
     ws_real = np.column_stack([np.real(w1), np.real(w2), np.real(w3)]) / denom[:, None]
     ws_imag = np.column_stack([np.imag(w1), np.imag(w2), np.imag(w3)]) / denom[:, None]
 
-    row_indices = np.repeat(np.arange(triangleCount), 3)
-    col_indices = triangulation.ravel()
+    ridx = np.repeat(np.arange(triangleCount), 3)
+    cidx = triangulation.ravel()
 
-    Mreal_csr = coo_matrix((ws_real.ravel(), (row_indices, col_indices)),
-                           shape=(triangleCount, vertexCount)).tocsr()
-    Mimag_csr = coo_matrix((ws_imag.ravel(), (row_indices, col_indices)),
-                           shape=(triangleCount, vertexCount)).tocsr()
+    Mreal = coo_matrix((ws_real.ravel(), (ridx, cidx)),
+                       shape=(triangleCount, vertexCount)).tocsr()
+    Mimag = coo_matrix((ws_imag.ravel(), (ridx, cidx)),
+                       shape=(triangleCount, vertexCount)).tocsr()
 
-    def solve_mapping(fixed_pts, fixed_vals, free_pts):
+    # -----------------------------------------------------------
+    # 3. linear solver helper
+    # -----------------------------------------------------------
+    def solve_mapping(fixed_pts: list[int],
+                      fixed_vals: np.ndarray,
+                      free_pts: np.ndarray) -> np.ndarray:
+
         A = vstack([
-            hstack([Mreal_csr[:, free_pts], -Mimag_csr[:, free_pts]]),
-            hstack([Mimag_csr[:, free_pts], Mreal_csr[:, free_pts]])
+            hstack([Mreal[:, free_pts], -Mimag[:, free_pts]]),
+            hstack([Mimag[:, free_pts],  Mreal[:, free_pts]])
         ])
 
-        b_real = Mreal_csr[:, fixed_pts] @ fixed_vals[:, 0] - Mimag_csr[:, fixed_pts] @ fixed_vals[:, 1]
-        b_imag = Mimag_csr[:, fixed_pts] @ fixed_vals[:, 0] + Mreal_csr[:, fixed_pts] @ fixed_vals[:, 1]
+        b_real = Mreal[:, fixed_pts] @ fixed_vals[:, 0] - \
+                 Mimag[:, fixed_pts] @ fixed_vals[:, 1]
+        b_imag = Mimag[:, fixed_pts] @ fixed_vals[:, 0] + \
+                 Mreal[:, fixed_pts] @ fixed_vals[:, 1]
         b = -np.concatenate([b_real, b_imag])
 
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
-
         if HAS_CHOLMOD:
             sol = cholesky(AtA)(Atb)
         else:
             sol = spsolve(AtA, Atb)
 
-        num_free = len(free_pts)
+        nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
-        mapped[fixed_pts] = fixed_vals
-        mapped[free_pts, 0] = sol[:num_free]
-        mapped[free_pts, 1] = sol[num_free:]
+        mapped[fixed_pts]    = fixed_vals
+        mapped[free_pts, 0]  = sol[:nf]
+        mapped[free_pts, 1]  = sol[nf:]
         return mapped
 
+    # -----------------------------------------------------------
+    # 4. set up diagonal anchors (always present)
+    # -----------------------------------------------------------
     diag_scale = M / np.sqrt(M**2 + N**2)
-    main_diag_fixed_pts = [0, vertexCount - 1]
-    main_diag_fixed_vals = np.array([
+
+    main_fixed_pts  = [0, vertexCount - 1]
+    main_fixed_vals = np.array([
         [xpos_new[0], ypos_new[0]],
-        [xpos_new[0] + mainDiagDist * diag_scale, ypos_new[0] + mainDiagDist * diag_scale * N / M]
+        [xpos_new[0] + mainDiagDist * diag_scale,
+         ypos_new[0] + mainDiagDist * diag_scale * N / M]
     ])
-    main_diag_free_pts = np.setdiff1d(np.arange(vertexCount), main_diag_fixed_pts)
-    mapped_main = solve_mapping(main_diag_fixed_pts, main_diag_fixed_vals, main_diag_free_pts)
 
-    skew_diag_fixed_pts = [M - 1, vertexCount - M]
-    skew_diag_fixed_vals = np.array([
+    skew_fixed_pts  = [M - 1, vertexCount - M]
+    skew_fixed_vals = np.array([
         [xpos_new[0] + skewDiagDist * diag_scale, ypos_new[0]],
-        [xpos_new[0], ypos_new[0] + skewDiagDist * diag_scale * N / M]
+        [xpos_new[0],
+         ypos_new[0] + skewDiagDist * diag_scale * N / M]
     ])
-    skew_diag_free_pts = np.setdiff1d(np.arange(vertexCount), skew_diag_fixed_pts)
-    mapped_skew = solve_mapping(skew_diag_fixed_pts, skew_diag_fixed_vals, skew_diag_free_pts)
 
-    # Final averaged result
-    mappedPositions = (mapped_main + mapped_skew) / 2
+    # -----------------------------------------------------------
+    # 5. branch on anchor count
+    # -----------------------------------------------------------
+    if n_anchors == 4:
+        # --- historical behaviour: two solves, then average ----------
+        free_main = np.setdiff1d(np.arange(vertexCount), main_fixed_pts)
+        map_main  = solve_mapping(main_fixed_pts, main_fixed_vals, free_main)
+
+        free_skew = np.setdiff1d(np.arange(vertexCount), skew_fixed_pts)
+        map_skew  = solve_mapping(skew_fixed_pts, skew_fixed_vals, free_skew)
+
+        mappedPositions = 0.5 * (map_main + map_skew)
+
+    else:
+        # --- single solve with additional anchors -------------------
+        fixed_pts  : list[int]       = main_fixed_pts + skew_fixed_pts
+        fixed_vals : list[np.ndarray] = [main_fixed_vals, skew_fixed_vals]
+
+        # add mid-lines (8 anchors) and quarter-lines (16 anchors)
+        if n_anchors >= 8:
+            mid_cols = [N // 2]
+            mid_rows = [M // 2]
+            if n_anchors == 16:
+                mid_cols += [N // 4, 3 * N // 4]
+                mid_rows += [M // 4, 3 * M // 4]
+
+            # horizontals
+            for c in mid_cols:
+                idx_left  = 0       + c * M
+                idx_right = (M - 1) + c * M
+                dz = VZmesh[M - 1, c] - VZmesh[0, c]
+                length = np.sqrt((xpos[-1] - xpos[0])**2 + dz**2)
+                fixed_pts += [idx_left, idx_right]
+                fixed_vals.append(np.array([
+                    [xpos_new[0],                 ypos_new[c]],
+                    [xpos_new[0] + length,        ypos_new[c]]
+                ]))
+
+            # verticals
+            for r in mid_rows:
+                idx_top    = r + 0 * M
+                idx_bottom = r + (N - 1) * M
+                dz = VZmesh[r, N - 1] - VZmesh[r, 0]
+                length = np.sqrt((ypos[-1] - ypos[0])**2 + dz**2)
+                fixed_pts += [idx_top, idx_bottom]
+                fixed_vals.append(np.array([
+                    [xpos_new[r], ypos_new[0]],
+                    [xpos_new[r], ypos_new[0] + length]
+                ]))
+
+        fixed_vals = np.vstack(fixed_vals)
+        free_pts   = np.setdiff1d(np.arange(vertexCount), fixed_pts)
+        mappedPositions = solve_mapping(fixed_pts, fixed_vals, free_pts)
+
     return mappedPositions
+
 
 def align_mapped_surface(    
     thisVZminmesh: np.ndarray,
@@ -560,6 +631,7 @@ def build_mapping(
     off_sac_surface: np.ndarray, # original `thisVZmaxmesh`  (OFF‑Starburst layer)
     arbor_xy_bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
     conformal_jump: int = 1, # original `conformalJump`
+    n_anchors: int = 16, # number of anchor points for conformal mapping, options: 4, 8 or 16
     *,
     verbose: bool = False
 ) -> dict:
@@ -588,6 +660,12 @@ def build_mapping(
         *(xmin, xmax, ymin, ymax)* bounds of the region that actually contains the arbor.  (Formerly `arborBoundaries`).
     conformal_jump : int, default 1
         Sub‑sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
+    n_anchors : int, default 16
+        Number of anchor points used for the conformal mapping.
+        Options are 4, 8 (default), or 16 anchors:
+            - 4   → original behaviour (two separate solves, then average)  
+            - 8   → add horizontal/vertical mid-lines (single solve)  
+            - 16  → also add the quarter-lines (single solve)
     verbose : bool, default False
         If *True*, print timing information.
 
@@ -634,7 +712,8 @@ def build_mapping(
         print("↳ mapping ON (min) surface …")    
         start_time = time.time()
     mapped_on = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled
+        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled,
+        n_anchors=n_anchors
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
@@ -643,7 +722,8 @@ def build_mapping(
         print("↳ mapping OFF (max) surface …")
         start_time = time.time()
     mapped_off = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled
+        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled,
+        n_anchors=n_anchors
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
@@ -667,4 +747,5 @@ def build_mapping(
         "sampled_y_idx": sampled_y_idx, # formerly `thisy`
         "on_sac_surface": on_sac_surface, # formerly `thisVZminmesh`
         "off_sac_surface": off_sac_surface, # formerly `thisVZmaxmesh`
+        "n_anchors": n_anchors
     }

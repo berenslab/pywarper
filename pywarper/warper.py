@@ -127,7 +127,11 @@ class Warper:
             print(f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds.")
         return self
 
-    def build_mapping(self, bounds:np.ndarray | tuple | None = None, conformal_jump: int = 2) -> "Warper":
+    def build_mapping(self, 
+                      bounds:np.ndarray | tuple | None = None, 
+                      conformal_jump: int = 2, 
+                      n_anchors: int = 16,
+    ) -> "Warper":
         """Create the quasi‑conformal surface mapping."""
         if self.off_sac_surface is None or self.on_sac_surface is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
@@ -149,6 +153,7 @@ class Warper:
             self.off_sac_surface,
             bounds,
             conformal_jump=conformal_jump,
+            n_anchors=n_anchors,
             verbose=self.verbose,
         )
         return self

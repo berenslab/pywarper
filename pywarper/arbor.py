@@ -161,7 +161,6 @@ def warp_nodes(
         nodes: np.ndarray,
         surface_mapping: dict,
         conformal_jump: int = 1,
-        apply_surface_shift: bool = False,
 ) -> tuple[np.ndarray, float, float]:
     
     # Unpack mappings and surfaces
@@ -226,10 +225,6 @@ def warp_nodes(
     # Apply local least-squares registration to each node
     warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
     
-    if apply_surface_shift:
-        xy_shift = surface_translation(surface_mapping)
-        warped += xy_shift
-
     # Compute median Z-planes
     med_z_on = np.median(on_subsampled_depths)
     med_z_off = np.median(off_subsampled_depths)
@@ -280,20 +275,6 @@ def normalize_nodes(
 
     return normalized_nodes
 
-
-def surface_translation(surface_mapping: dict) -> np.ndarray:
-    """
-    Return the XY offset (np.float64[2]) that the conformal solver added.
-    Works for any mapping produced by build_mapping().
-    """
-    # mean position of the sampled patch before mapping
-    in_centre  = np.array([surface_mapping["sampled_x_idx"].mean(),
-                        surface_mapping["sampled_y_idx"].mean()])
-
-    # mean position of the same vertices after mapping
-    out_centre = surface_mapping["mapped_on"][:, :2].mean(0)
-
-    return np.hstack([in_centre - out_centre, 0])          # Δx, Δy, 0
 
 def warp_arbor(
     skel: Skeleton,
@@ -387,10 +368,6 @@ def warp_arbor(
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
-    # anchor the nodes to align the soma with the origin
-    xy_shift = surface_translation(surface_mapping)
-    normalized_nodes += xy_shift # shift nodes to align soma
-
     normalized_soma = skel.soma
     normalized_soma.centre = normalized_nodes[0] * voxel_resolution  # soma is at the first node
 
@@ -413,7 +390,7 @@ def warp_arbor(
         "med_z_off": float(med_z_off),
         "z_profile": z_profile,
         "xy_profile": xy_profile,
-        "xy_shift": xy_shift,  # shift applied to the nodes
+        # "xy_shift": xy_shift,  # shift applied to the nodes
     }
 
     return skel_norm
@@ -454,9 +431,6 @@ def warp_mesh(
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
-    xy_shift = surface_translation(surface_mapping)
-    normalized_vertices += xy_shift # shift nodes to align soma
-
     # Create a new mesh with the warped vertices
     warped_mesh = trimesh.Trimesh(
         vertices=normalized_vertices / mesh_vertices_scale, # rescale back to original units
@@ -472,6 +446,7 @@ def warp_mesh(
     warped_mesh.metadata["off_sac_pos"] = off_sac_pos
 
     return warped_mesh
+
 # =====================================================================
 # helpers for get_zprofile()
 # =====================================================================
