@@ -37,9 +37,8 @@ def test_arbor():
     # to me it makes more sense to use physical units from the start but this is how the original code works
     # so I will keep it like this: only convert the warped arbor to physical units at the `warp_arbor` function
     voxel_resolution = [0.4, 0.4, 0.5]
-    # warped_arbor = warp_arbor(nodes, edges, radii, surface_mapping, voxel_resolution=voxel_resolution, conformal_jump=2, verbose=True)
     warped_arbor = warp_arbor(skel, surface_mapping, voxel_resolution=voxel_resolution, conformal_jump=2, verbose=True)
-    warped_nodes = warped_arbor.nodes
+    warped_nodes = warped_arbor.extra["warped_nodes"]
 
     warped_arbor_mat = scipy.io.loadmat("./tests/data/warpedArbor_jump.mat", squeeze_me=True, struct_as_record=False)
     warped_nodes_mat = warped_arbor_mat["warpedArbor"].nodes

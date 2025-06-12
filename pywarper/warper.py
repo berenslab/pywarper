@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import skeliner as sk
 
-from pywarper.arbor import get_xyprofile, get_zprofile, warp_arbor
+from pywarper.arbor import warp_arbor
 from pywarper.surface import build_mapping, fit_sac_surface
 
 __all__ = [
@@ -153,7 +153,15 @@ class Warper:
         )
         return self
 
-    def warp_arbor(self, voxel_resolution: list[float] | None = None, conformal_jump: int = 2) -> "Warper":
+    def warp_arbor(self, 
+                zprofile_extends: list[float] | None = None,
+                zprofile_nbins: int = 120,
+                xyprofile_extends: list[float] | None = None,
+                xyprofile_nbins: int = 20,
+                xyprofile_smooth: float = 1.,
+                voxel_resolution: list[float] | None = None, 
+                conformal_jump: int = 2,
+    ) -> "Warper":
         """Apply the mapping to the arbor."""
         if self.mapping is None:
             raise RuntimeError("Mapping missing. Call build_mapping() first.")
@@ -166,36 +174,11 @@ class Warper:
             self.mapping,
             voxel_resolution=voxel_resolution,
             conformal_jump=conformal_jump,
+            zprofile_extends=zprofile_extends,
+            zprofile_nbins=zprofile_nbins,
+            xyprofile_extends=xyprofile_extends,
+            xyprofile_nbins=xyprofile_nbins,
+            xyprofile_smooth=xyprofile_smooth,
             verbose=self.verbose,
         )
         return self
-
-    # ---------------------------- Stats ----------------------------------
-    def get_arbor_density(
-            self, 
-            z_res: float = 1, 
-            z_window: list[float] | None = None,
-            z_nbins: int = 120,
-            xy_window: list[float] | None = None,
-            xy_nbins: int = 20,
-            xy_sigma_bins: float = 1.
-    ) -> "Warper":
-        """Return depth profile as in *get_zprofile*."""
-        if self.warped_arbor is None:
-            raise RuntimeError("Arbor not warped yet.")
-        self.normed_arbor = get_zprofile(self.warped_arbor, z_res=z_res, z_window=z_window, nbins=z_nbins)
-
-        self.normed_arbor = get_xyprofile(
-            self.normed_arbor, xy_window=xy_window, nbins=xy_nbins, sigma_bins=xy_sigma_bins
-        )
-
-        return self
-
-    def stats(self):
-
-        """Return the statistics of the warped arbor."""
-        if self.warped_arbor is None:
-            raise RuntimeError("Arbor not warped yet. Call warp().")
-        
-        # Calculate the statistics
-        ## 

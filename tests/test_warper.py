@@ -33,7 +33,7 @@ def test_warper():
     warped_arbor_mat = scipy.io.loadmat("./tests/data/warpedArbor_jump.mat", squeeze_me=True, struct_as_record=False)
     warped_nodes_mat = warped_arbor_mat["warpedArbor"].nodes
 
-    assert np.allclose(w.warped_arbor.nodes, warped_nodes_mat, rtol=1e-5, atol=1e-8), "Warped nodes do not match expected values."
+    assert np.allclose(w.warped_arbor.extra["warped_nodes"], warped_nodes_mat, rtol=1e-5, atol=1e-8), "Warped nodes do not match expected values."
     assert np.isclose(w.warped_arbor.extra["med_z_on"], warped_arbor_mat["warpedArbor"].medVZmin), "Minimum VZ does not match expected value."
     assert np.isclose(w.warped_arbor.extra["med_z_off"], warped_arbor_mat["warpedArbor"].medVZmax), "Maximum VZ does not match expected value."
     assert w.warped_arbor.extra["med_z_on"] < w.warped_arbor.extra["med_z_off"], "Minimum VZ should be less than maximum VZ."

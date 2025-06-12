@@ -2,7 +2,7 @@
 import numpy as np
 
 
-def read_sumbul_et_al_chat_bands(fname: str) -> dict[str, np.ndarray]:
+def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarray]:
     """
     Read a ChAT-band point cloud exported by KNOSSOS/FiJi.
 
@@ -31,4 +31,15 @@ def read_sumbul_et_al_chat_bands(fname: str) -> dict[str, np.ndarray]:
     y = data[:, 1]              # Slice (already 1-based)
     z = data[:, 2] + 1          # KNOSSOS Y  → +1
 
-    return {"x": x, "y": y, "z": z}
+    if unit == "voxel":
+        return {"x": x, "y": y, "z": z}
+    elif unit == "physical":
+        # Convert to physical units (in micrometers)
+        voxel_resolution = [0.4, 0.4, 0.5]
+        return {
+            "x": x * voxel_resolution[0],
+            "y": y * voxel_resolution[1],
+            "z": z * voxel_resolution[2],
+        }
+    else:
+        raise ValueError(f"Unknown unit: {unit}. Use 'voxel' or 'physical'.")
