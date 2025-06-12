@@ -276,6 +276,20 @@ def normalize_nodes(
     return normalized_nodes
 
 
+def surface_translation(surface_mapping: dict) -> np.ndarray:
+    """
+    Return the XY offset (np.float64[2]) that the conformal solver added.
+    Works for any mapping produced by build_mapping().
+    """
+    # mean position of the sampled patch before mapping
+    in_centre  = np.array([surface_mapping["sampled_x_idx"].mean(),
+                        surface_mapping["sampled_y_idx"].mean()])
+
+    # mean position of the same vertices after mapping
+    out_centre = surface_mapping["mapped_on"][:, :2].mean(0)
+
+    return np.hstack([in_centre - out_centre, 0])          # Δx, Δy, 0
+
 def warp_arbor(
     skel: Skeleton,
     surface_mapping: dict,
@@ -368,40 +382,44 @@ def warp_arbor(
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
-    soma = skel.soma
-    soma.centre = normalized_nodes[0] * voxel_resolution  # soma is at the first node
+    # anchor the nodes to align the soma with the origin
+    xy_shift = surface_translation(surface_mapping)
+    normalized_nodes += xy_shift # shift nodes to align soma
+
+    normalized_soma = skel.soma
+    normalized_soma.centre = normalized_nodes[0] * voxel_resolution  # soma is at the first node
 
     skel_norm = Skeleton(
-        soma   = soma,                     
+        soma   = normalized_soma,
         nodes  = normalized_nodes * voxel_resolution,
         edges  = skel.edges,      # same connectivity
         radii  = skel.radii,      # same radii dict
         ntype  = skel.ntype,      # same node types (if any) 
     )
 
-
     z_profile = get_zprofile(skel_norm, z_window=zprofile_extends, nbins=zprofile_nbins)
     xy_profile = get_xyprofile(
         skel_norm, xy_window=xyprofile_extends, nbins=xyprofile_nbins, sigma_bins=xyprofile_smooth
     )
 
-    skel_norm.extra = {          # keep the pre-normed nodes for reference
-        "warped_nodes": warped_nodes * voxel_resolution,
+    skel_norm.extra = {          
+        "warped_nodes": warped_nodes * voxel_resolution, # keep the pre-normed nodes for reference
         "med_z_on":  float(med_z_on),
         "med_z_off": float(med_z_off),
         "z_profile": z_profile,
         "xy_profile": xy_profile,
+        "xy_shift": xy_shift,  # shift applied to the nodes
     }
 
     return skel_norm
 
 def warp_mesh(
-    mesh: trimesh.Trimesh,
-    surface_mapping: dict,
+    mesh: trimesh.Trimesh, # mostly nm
+    surface_mapping: dict, # mostly μm
     conformal_jump: int = 1,
     on_sac_pos: float = 0.0, # μm
     off_sac_pos: float = 12.0, # μm
-    mesh_vertices_scale: float = 1.0,
+    mesh_vertices_scale: float = 1.0, # scale factor for mesh vertices, e.g., 1e-3 for nm to μm
     verbose: bool = False,
 ) -> trimesh.Trimesh:
     """
@@ -409,19 +427,19 @@ def warp_mesh(
     of previously computed surface mappings.
     """
 
-    nodes = mesh.vertices.astype(float) * mesh_vertices_scale
+    vertices = mesh.vertices.astype(float) * mesh_vertices_scale # scale to the surface unit, which is often μm
 
     if verbose:
         print("[pywarper] Warping mesh...")
         start_time = time.time()
-    warped_nodes, med_z_on, med_z_off = warp_nodes(
-        nodes,
+    warped_vertices, med_z_on, med_z_off = warp_nodes(
+        vertices,
         surface_mapping,
         conformal_jump=conformal_jump,
     )
 
-    normalized_nodes = normalize_nodes(
-        warped_nodes,
+    normalized_vertices = normalize_nodes(
+        warped_vertices,
         med_z_on=med_z_on,
         med_z_off=med_z_off,
         on_sac_pos=on_sac_pos,
@@ -431,11 +449,13 @@ def warp_mesh(
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
+    xy_shift = surface_translation(surface_mapping)
+    normalized_vertices += xy_shift # shift nodes to align soma
+
     # Create a new mesh with the warped vertices
     warped_mesh = trimesh.Trimesh(
-        vertices=normalized_nodes / mesh_vertices_scale, # rescale back to original units
+        vertices=normalized_vertices / mesh_vertices_scale, # rescale back to original units
         faces=mesh.faces,
-        vertex_normals=None,  # keep normals
         process=False,        # no processing
     )
     warped_mesh.metadata = mesh.metadata.copy()  # copy metadata
