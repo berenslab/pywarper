@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import skeliner as sk
 
-from pywarper.arbor import get_xyprofile, get_zprofile, warp_arbor
+from pywarper.arbor import warp_arbor
 from pywarper.surface import build_mapping, fit_sac_surface
 
 __all__ = [

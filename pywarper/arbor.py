@@ -161,9 +161,10 @@ def warp_nodes(
         nodes: np.ndarray,
         surface_mapping: dict,
         conformal_jump: int = 1,
+        apply_surface_shift: bool = False,
 ) -> tuple[np.ndarray, float, float]:
     
-        # Unpack mappings and surfaces
+    # Unpack mappings and surfaces
     mapped_on = surface_mapping["mapped_on"]
     mapped_off = surface_mapping["mapped_off"]
     on_sac_surface = surface_mapping["on_sac_surface"]
@@ -225,6 +226,10 @@ def warp_nodes(
     # Apply local least-squares registration to each node
     warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
     
+    if apply_surface_shift:
+        xy_shift = surface_translation(surface_mapping)
+        warped += xy_shift
+
     # Compute median Z-planes
     med_z_on = np.median(on_subsampled_depths)
     med_z_off = np.median(off_subsampled_depths)
