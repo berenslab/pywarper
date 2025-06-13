@@ -110,6 +110,7 @@ def local_ls_registration(
 
         idx = idx[mask_rect]                      # inside the rectangle
         if idx.size == 0:
+            print(f"[pywarper] Warning: no neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})")
             transformed_nodes[k] = nodes[k]
             continue
 
@@ -124,6 +125,7 @@ def local_ls_registration(
         this_out = np.vstack((out_top, out_bot))
 
         if this_in.shape[0] < 12:
+            print(f"[pywarper] Warning: not enough neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})")
             transformed_nodes[k] = nodes[k]
             continue
 
@@ -140,6 +142,7 @@ def local_ls_registration(
         # polynomial basis
         base_terms = poly_basis_2d(xin, yin, max_order)          # (n_pts, n_terms)
         X = np.hstack((base_terms, base_terms * zin[:, None]))   # z-modulated
+
 
         # least-squares solve
         T, _, _, _ = lstsq(X, np.column_stack((xout, yout, zout)), rcond=None)
@@ -161,7 +164,7 @@ def warp_nodes(
         nodes: np.ndarray,
         surface_mapping: dict,
         conformal_jump: int = 1,
-        apply_surface_shift: bool = False,
+        backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
     
     # Unpack mappings and surfaces
@@ -169,13 +172,19 @@ def warp_nodes(
     mapped_off = surface_mapping["mapped_off"]
     on_sac_surface = surface_mapping["on_sac_surface"]
     off_sac_surface = surface_mapping["off_sac_surface"]
-    sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
-    sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
-    # this is one ugly hack: thisx and thisy are 1-based in MATLAB
-    # but 0-based in Python; the rest of the code is to produce exact
-    # same results as MATLAB given the SAME input, that means thisx and 
-    # thisy needs to be 1-based, but we need to shift it back to 0-based 
-    # when slicing
+
+    if backward_compatible:
+        sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
+        sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
+        # this is one ugly hack: thisx and thisy are 1-based in MATLAB
+        # but 0-based in Python; the rest of the code is to produce exact
+        # same results as MATLAB given the SAME input, that means thisx and 
+        # thisy needs to be 1-based, but we need to shift it back to 0-based 
+        # when slicing
+    else:
+        sampled_x_idx = surface_mapping["sampled_x_idx"]
+        sampled_y_idx = surface_mapping["sampled_y_idx"]
+
     
     # Convert MATLAB 1-based inclusive ranges to Python slices
     # If thisx/thisy are consecutive integer indices:
@@ -191,8 +200,12 @@ def warp_nodes(
 
     # Extract the corresponding subregion of the surfaces so it also has shape (len(x_vals), len(y_vals)).
     # In MATLAB: tmpminmesh = thisVZminmesh(xRange, yRange)
-    on_subsampled_depths =  on_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
-    off_subsampled_depths = off_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+    if backward_compatible:
+        on_subsampled_depths =  on_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+        off_subsampled_depths = off_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+    else:
+        on_subsampled_depths =  on_sac_surface[x_vals[:, None], y_vals]
+        off_subsampled_depths = off_sac_surface[x_vals[:, None], y_vals]
 
     # Now flatten in column-major order (like MATLAB’s A(:)) to line up with tmpxmesh(:), etc.
     on_input_pts = np.column_stack([
@@ -226,10 +239,6 @@ def warp_nodes(
     # Apply local least-squares registration to each node
     warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
     
-    if apply_surface_shift:
-        xy_shift = surface_translation(surface_mapping)
-        warped += xy_shift
-
     # Compute median Z-planes
     med_z_on = np.median(on_subsampled_depths)
     med_z_off = np.median(off_subsampled_depths)
@@ -281,20 +290,6 @@ def normalize_nodes(
     return normalized_nodes
 
 
-def surface_translation(surface_mapping: dict) -> np.ndarray:
-    """
-    Return the XY offset (np.float64[2]) that the conformal solver added.
-    Works for any mapping produced by build_mapping().
-    """
-    # mean position of the sampled patch before mapping
-    in_centre  = np.array([surface_mapping["sampled_x_idx"].mean(),
-                        surface_mapping["sampled_y_idx"].mean()])
-
-    # mean position of the same vertices after mapping
-    out_centre = surface_mapping["mapped_on"][:, :2].mean(0)
-
-    return np.hstack([in_centre - out_centre, 0])          # Δx, Δy, 0
-
 def warp_arbor(
     skel: Skeleton,
     surface_mapping: dict,
@@ -307,6 +302,7 @@ def warp_arbor(
     xyprofile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
     xyprofile_nbins: int = 20,
     xyprofile_smooth: float = 1.0,
+    backward_compatible: bool = False,
     verbose: bool = False,
 ) -> Skeleton:
     """
@@ -367,6 +363,9 @@ def warp_arbor(
 
     nodes = skel.nodes.astype(float)
 
+    # if not backward_compatible:
+    #     nodes[:, :2] -= 1
+
     if verbose:
         print("[pywarper] Warping arbor...")
         start_time = time.time()
@@ -374,6 +373,7 @@ def warp_arbor(
         nodes,
         surface_mapping,
         conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
     )
 
     normalized_nodes = normalize_nodes(
@@ -386,10 +386,6 @@ def warp_arbor(
 
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
-
-    # anchor the nodes to align the soma with the origin
-    xy_shift = surface_translation(surface_mapping)
-    normalized_nodes += xy_shift # shift nodes to align soma
 
     normalized_soma = skel.soma
     normalized_soma.centre = normalized_nodes[0] * voxel_resolution  # soma is at the first node
@@ -413,7 +409,7 @@ def warp_arbor(
         "med_z_off": float(med_z_off),
         "z_profile": z_profile,
         "xy_profile": xy_profile,
-        "xy_shift": xy_shift,  # shift applied to the nodes
+        # "xy_shift": xy_shift,  # shift applied to the nodes
     }
 
     return skel_norm
@@ -425,6 +421,7 @@ def warp_mesh(
     on_sac_pos: float = 0.0, # μm
     off_sac_pos: float = 12.0, # μm
     mesh_vertices_scale: float = 1.0, # scale factor for mesh vertices, e.g., 1e-3 for nm to μm
+    backward_compatible: bool = False,
     verbose: bool = False,
 ) -> trimesh.Trimesh:
     """
@@ -441,6 +438,7 @@ def warp_mesh(
         vertices,
         surface_mapping,
         conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
     )
 
     normalized_vertices = normalize_nodes(
@@ -453,9 +451,6 @@ def warp_mesh(
 
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
-
-    xy_shift = surface_translation(surface_mapping)
-    normalized_vertices += xy_shift # shift nodes to align soma
 
     # Create a new mesh with the warped vertices
     warped_mesh = trimesh.Trimesh(
@@ -472,6 +467,7 @@ def warp_mesh(
     warped_mesh.metadata["off_sac_pos"] = off_sac_pos
 
     return warped_mesh
+
 # =====================================================================
 # helpers for get_zprofile()
 # =====================================================================

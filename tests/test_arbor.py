@@ -29,15 +29,15 @@ def test_arbor():
     # +1 to match MATLAB indexing (1-based)
     skel.nodes += 1
 
-    off_sac_surface, _, _ = fit_sac_surface(x=off_sac['x'], y=off_sac['y'], z=off_sac['z'], smoothness=15)
-    on_sac_surface, _, _ = fit_sac_surface(x=on_sac['x'], y=on_sac['y'], z=on_sac['z'], smoothness=15)
+    off_sac_surface, _, _ = fit_sac_surface(x=off_sac['x'], y=off_sac['y'], z=off_sac['z'], smoothness=15, backward_compatible=True)
+    on_sac_surface, _, _ = fit_sac_surface(x=on_sac['x'], y=on_sac['y'], z=on_sac['z'], smoothness=15, backward_compatible=True)
     arbor_boundaries = np.array([skel.nodes[:, 0].min(), skel.nodes[:, 0].max(), skel.nodes[:, 1].min(), skel.nodes[:, 1].max()])
-    surface_mapping = build_mapping(on_sac_surface, off_sac_surface, arbor_boundaries, conformal_jump=2, verbose=True)
+    surface_mapping = build_mapping(on_sac_surface, off_sac_surface, arbor_boundaries, conformal_jump=2, n_anchors=4, backward_compatible=True, verbose=True)
     
     # to me it makes more sense to use physical units from the start but this is how the original code works
     # so I will keep it like this: only convert the warped arbor to physical units at the `warp_arbor` function
     voxel_resolution = [0.4, 0.4, 0.5]
-    warped_arbor = warp_arbor(skel, surface_mapping, voxel_resolution=voxel_resolution, conformal_jump=2, verbose=True)
+    warped_arbor = warp_arbor(skel, surface_mapping, voxel_resolution=voxel_resolution, conformal_jump=2, backward_compatible=True, verbose=True)
     warped_nodes = warped_arbor.extra["warped_nodes"]
 
     warped_arbor_mat = scipy.io.loadmat("./tests/data/warpedArbor_jump.mat", squeeze_me=True, struct_as_record=False)
