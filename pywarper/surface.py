@@ -51,6 +51,7 @@ def fit_sac_surface(
     z: np.ndarray,
     xmax: int | float | None = None,
     ymax: int | float | None = None,
+    stride: int = 3, 
     smoothness: int = 1,
     extend: str = "warning",
     interp: str = "triangle",
@@ -60,6 +61,7 @@ def fit_sac_surface(
     autoscale: str = "on",
     xscale: float = 1.0,
     yscale: float = 1.0,
+    backward_compatible: bool = False
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Fits a surface to scattered data points (x, y, z) using grid-based interpolation
@@ -98,7 +100,9 @@ def fit_sac_surface(
         Additional scaling factor applied to the x-dimension during fitting.
     yscale : float, default=1.0
         Additional scaling factor applied to the y-dimension during fitting.
-
+    backward_compatible : bool, default=False
+        If True, use the same node spacing as the original MATLAB implementation.
+        
     Returns
     -------
     zmesh: np.ndarray (xmax, ymax)
@@ -111,8 +115,13 @@ def fit_sac_surface(
     if ymax is None:
         ymax = np.max(y).astype(float)
 
-    xnodes = np.hstack([np.arange(1., xmax, 3.), np.array([xmax])])
-    ynodes = np.hstack([np.arange(1., ymax, 3.), np.array([ymax])])
+    if backward_compatible:
+        # MATLAB-style nodes
+        xnodes = np.hstack([np.arange(1., xmax, stride), np.array([xmax])])
+        ynodes = np.hstack([np.arange(1., ymax, stride), np.array([ymax])])
+    else:
+        xnodes = np.arange(0, xmax + stride, stride)
+        ynodes = np.arange(0, ymax + stride, stride)
 
     g = GridFit(x, y, z, xnodes, ynodes, 
                     smoothness=smoothness,
@@ -128,7 +137,7 @@ def fit_sac_surface(
     zgrid = np.asarray(g.zgrid)
 
     zmesh, xmesh, ymesh = resample_zgrid(
-        xnodes, ynodes, zgrid, xmax, ymax
+        xnodes, ynodes, zgrid, xmax, ymax, backward_compatible
     )
 
     return zmesh, xmesh, ymesh
@@ -139,6 +148,7 @@ def resample_zgrid(
     zgrid: np.ndarray,
     xmax: int | float,
     ymax: int | float,
+    backward_compatible: bool = False
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Resamples a 2D grid (zgrid) at integer coordinates up to xmax and ymax.
@@ -196,11 +206,18 @@ def resample_zgrid(
 
     # 2) Make xi, yi as in MATLAB, 
     #    then do xi=xi', yi=yi' => shape (xmax, ymax).
-    xi_m, yi_m = np.meshgrid(
-        np.arange(1, xmax+1), 
-        np.arange(1, ymax+1), 
-        indexing='xy'
-    )
+    if backward_compatible:
+        xi_m, yi_m = np.meshgrid(
+            np.arange(1, xmax+1), 
+            np.arange(1, ymax+1), 
+            indexing='xy'
+        )
+    else:
+        xi_m, yi_m = np.meshgrid(
+            np.arange(0, xmax), 
+            np.arange(0, ymax), 
+            indexing='xy'
+        )
     xi = xi_m.T  # shape (xmax, ymax)
     yi = yi_m.T  # shape (xmax, ymax)
 
@@ -331,7 +348,8 @@ def conformal_map_indep_fixed_diagonals(
     ypos: np.ndarray,
     VZmesh: np.ndarray,
     *,
-    n_anchors: int = 16        # 4, 8 (default) or 16
+    n_anchors: int = 16,        # 4, 8 (default) or 16
+    backward_compatible: bool = False
 ) -> np.ndarray:
     """
     Creates a quasi-conformal 2D mapping of the surface in VZmesh. 
@@ -371,8 +389,13 @@ def conformal_map_indep_fixed_diagonals(
     The final 2D layout merges two separate diagonal constraints.
     """  
     M, N = VZmesh.shape
-    xpos_new = xpos + 1
-    ypos_new = ypos + 1
+
+    if backward_compatible:
+        xpos_new = xpos + 1
+        ypos_new = ypos + 1
+    else:
+        xpos_new = xpos
+        ypos_new = ypos
     vertexCount   = M * N
     triangleCount = (2 * M - 2) * (N - 1)
 
@@ -629,11 +652,12 @@ def align_mapped_surface(
 def build_mapping(
     on_sac_surface: np.ndarray, # original `thisVZminmesh`  (ON‑Starburst layer)
     off_sac_surface: np.ndarray, # original `thisVZmaxmesh`  (OFF‑Starburst layer)
-    arbor_xy_bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
+    bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
     conformal_jump: int = 1, # original `conformalJump`
     n_anchors: int = 16, # number of anchor points for conformal mapping, options: 4, 8 or 16
     *,
-    verbose: bool = False
+    verbose: bool = False,
+    backward_compatible: bool = False  # for MATLAB compatibility
 ) -> dict:
     """
     Create a 2D conformal map that **flattens** the ON‑ and OFF‑Starburst Amacrine Cell (SAC) 
@@ -644,7 +668,7 @@ def build_mapping(
 
     Workflow
     --------
-    1. **Subsample** both SAC height‑fields within `arbor_xy_bounds` at every `conformal_jump` pixels.
+    1. **Subsample** both SAC height‑fields within `bounds` at every `conformal_jump` pixels.
     2. Measure the true 3D lengths of the main and skew diagonals on each subsampled surface.
     3. **Conformally map** the ON and OFF surfaces independently so those diagonals become straight with the measured lengths.
     4. **Align** the OFF map to the ON map by finding the x/y shift that minimises local slope mismatches.
@@ -656,7 +680,7 @@ def build_mapping(
         Height map of the ON ("minimum") SAC layer, shape *(X, Y).*  (Formerly `thisVZminmesh`).
     off_sac_surface : np.ndarray
         Height map of the OFF ("maximum") SAC layer, shape *(X, Y).*  (Formerly `thisVZmaxmesh`).
-    arbor_xy_bounds : tuple[int, int, int, int] | np.ndarray
+    bounds : tuple[int, int, int, int] | np.ndarray
         *(xmin, xmax, ymin, ymax)* bounds of the region that actually contains the arbor.  (Formerly `arborBoundaries`).
     conformal_jump : int, default 1
         Sub‑sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
@@ -684,7 +708,10 @@ def build_mapping(
             The original (subsampled) height fields kept for debugging or visualisation.
     """
 
-    xmin, xmax, ymin, ymax = np.asarray(arbor_xy_bounds) - 1 # Convert to 0-based indexing
+    if backward_compatible:
+        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1 # Convert to 0-based indexing
+    else:
+        xmin, xmax, ymin, ymax = np.asarray(bounds)
 
     nx, ny = off_sac_surface.shape
     sampled_x_idx = np.arange(max(xmin - 1, 0),  min(xmax + 1, nx - 1) + 1,
@@ -713,7 +740,7 @@ def build_mapping(
         start_time = time.time()
     mapped_on = conformal_map_indep_fixed_diagonals(
         float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled,
-        n_anchors=n_anchors
+        n_anchors=n_anchors, backward_compatible=backward_compatible,
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
@@ -723,7 +750,7 @@ def build_mapping(
         start_time = time.time()
     mapped_off = conformal_map_indep_fixed_diagonals(
         float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled,
-        n_anchors=n_anchors
+        n_anchors=n_anchors, backward_compatible=backward_compatible,
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")

@@ -26,9 +26,9 @@ def test_warper():
     voxel_resolution = [0.4, 0.4, 0.5]
     w = Warper(off_sac, on_sac, cell_path, voxel_resolution=voxel_resolution, verbose=False)
     w.skel.nodes += 1  # unnecessary, but to match the matlab behavior
-    w.fit_surfaces()
-    w.build_mapping(n_anchors=4)
-    w.warp_arbor()
+    w.fit_surfaces(backward_compatible=True)
+    w.build_mapping(n_anchors=4, backward_compatible=True)
+    w.warp_arbor(backward_compatible=True)
 
     warped_arbor_mat = scipy.io.loadmat("./tests/data/warpedArbor_jump.mat", squeeze_me=True, struct_as_record=False)
     warped_nodes_mat = warped_arbor_mat["warpedArbor"].nodes

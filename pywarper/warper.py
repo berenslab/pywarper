@@ -99,7 +99,7 @@ class Warper:
 
     # ---------------------------- Core -----------------------------------
 
-    def fit_surfaces(self, xmax=None, ymax=None, smoothness: int = 15) -> "Warper":
+    def fit_surfaces(self, xmax=None, ymax=None, stride:int = 3, smoothness: int = 15, backward_compatible:bool=False) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
             print("[pywarper] Fitting SAC surfaces …")
@@ -109,8 +109,10 @@ class Warper:
             x=self.off_sac[0], 
             y=self.off_sac[1],
             z=self.off_sac[2], 
+            stride=stride,
             smoothness=smoothness,
             xmax=xmax, ymax=ymax,
+            backward_compatible=backward_compatible,
         )
         if self.verbose:
             print(f"↳ fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds.")
@@ -122,6 +124,7 @@ class Warper:
             z=self.on_sac[2], 
             smoothness=smoothness,
             xmax=xmax, ymax=ymax,
+            backward_compatible=backward_compatible,
         )
         if self.verbose:
             print(f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds.")
@@ -131,6 +134,7 @@ class Warper:
                       bounds:np.ndarray | tuple | None = None, 
                       conformal_jump: int = 2, 
                       n_anchors: int = 16,
+                      backward_compatible: bool = False,
     ) -> "Warper":
         """Create the quasi‑conformal surface mapping."""
         if self.off_sac_surface is None or self.on_sac_surface is None:
@@ -141,6 +145,8 @@ class Warper:
                 self.skel.nodes[:, 0].min(), self.skel.nodes[:, 0].max(),
                 self.skel.nodes[:, 1].min(), self.skel.nodes[:, 1].max(),
             ])
+        elif bounds == "global":
+            bounds = (0, self.on_sac_surface.shape[0], 0, self.on_sac_surface.shape[1])
         else:
             bounds = np.asarray(bounds, dtype=float)
             if bounds.shape != (4,):
@@ -154,6 +160,7 @@ class Warper:
             bounds,
             conformal_jump=conformal_jump,
             n_anchors=n_anchors,
+            backward_compatible=backward_compatible,
             verbose=self.verbose,
         )
         return self
@@ -166,6 +173,7 @@ class Warper:
                 xyprofile_smooth: float = 1.,
                 voxel_resolution: list[float] | None = None, 
                 conformal_jump: int = 2,
+                backward_compatible: bool = False,
     ) -> "Warper":
         """Apply the mapping to the arbor."""
         if self.mapping is None:
@@ -184,6 +192,7 @@ class Warper:
             xyprofile_extends=xyprofile_extends,
             xyprofile_nbins=xyprofile_nbins,
             xyprofile_smooth=xyprofile_smooth,
+            backward_compatible=backward_compatible,
             verbose=self.verbose,
         )
         return self

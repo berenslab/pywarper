@@ -161,6 +161,7 @@ def warp_nodes(
         nodes: np.ndarray,
         surface_mapping: dict,
         conformal_jump: int = 1,
+        backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
     
     # Unpack mappings and surfaces
@@ -168,8 +169,13 @@ def warp_nodes(
     mapped_off = surface_mapping["mapped_off"]
     on_sac_surface = surface_mapping["on_sac_surface"]
     off_sac_surface = surface_mapping["off_sac_surface"]
-    sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
-    sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
+
+    if backward_compatible:
+        sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
+        sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
+    else:
+        sampled_x_idx = surface_mapping["sampled_x_idx"]
+        sampled_y_idx = surface_mapping["sampled_y_idx"]
     # this is one ugly hack: thisx and thisy are 1-based in MATLAB
     # but 0-based in Python; the rest of the code is to produce exact
     # same results as MATLAB given the SAME input, that means thisx and 
@@ -190,8 +196,12 @@ def warp_nodes(
 
     # Extract the corresponding subregion of the surfaces so it also has shape (len(x_vals), len(y_vals)).
     # In MATLAB: tmpminmesh = thisVZminmesh(xRange, yRange)
-    on_subsampled_depths =  on_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
-    off_subsampled_depths = off_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+    if backward_compatible:
+        on_subsampled_depths =  on_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+        off_subsampled_depths = off_sac_surface[x_vals[:, None]-1, y_vals-1]  # shape (len(x_vals), len(y_vals))
+    else:
+        on_subsampled_depths =  on_sac_surface[x_vals[:, None], y_vals]
+        off_subsampled_depths = off_sac_surface[x_vals[:, None], y_vals]
 
     # Now flatten in column-major order (like MATLAB’s A(:)) to line up with tmpxmesh(:), etc.
     on_input_pts = np.column_stack([
@@ -288,6 +298,7 @@ def warp_arbor(
     xyprofile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
     xyprofile_nbins: int = 20,
     xyprofile_smooth: float = 1.0,
+    backward_compatible: bool = False,
     verbose: bool = False,
 ) -> Skeleton:
     """
@@ -348,6 +359,9 @@ def warp_arbor(
 
     nodes = skel.nodes.astype(float)
 
+    # if not backward_compatible:
+    #     nodes[:, :2] -= 1
+
     if verbose:
         print("[pywarper] Warping arbor...")
         start_time = time.time()
@@ -355,6 +369,7 @@ def warp_arbor(
         nodes,
         surface_mapping,
         conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
     )
 
     normalized_nodes = normalize_nodes(
@@ -402,6 +417,7 @@ def warp_mesh(
     on_sac_pos: float = 0.0, # μm
     off_sac_pos: float = 12.0, # μm
     mesh_vertices_scale: float = 1.0, # scale factor for mesh vertices, e.g., 1e-3 for nm to μm
+    backward_compatible: bool = False,
     verbose: bool = False,
 ) -> trimesh.Trimesh:
     """
@@ -418,6 +434,7 @@ def warp_mesh(
         vertices,
         surface_mapping,
         conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
     )
 
     normalized_vertices = normalize_nodes(
