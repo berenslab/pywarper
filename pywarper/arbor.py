@@ -110,6 +110,7 @@ def local_ls_registration(
 
         idx = idx[mask_rect]                      # inside the rectangle
         if idx.size == 0:
+            print(f"[pywarper] Warning: no neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})")
             transformed_nodes[k] = nodes[k]
             continue
 
@@ -124,6 +125,7 @@ def local_ls_registration(
         this_out = np.vstack((out_top, out_bot))
 
         if this_in.shape[0] < 12:
+            print(f"[pywarper] Warning: not enough neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})")
             transformed_nodes[k] = nodes[k]
             continue
 
@@ -140,6 +142,7 @@ def local_ls_registration(
         # polynomial basis
         base_terms = poly_basis_2d(xin, yin, max_order)          # (n_pts, n_terms)
         X = np.hstack((base_terms, base_terms * zin[:, None]))   # z-modulated
+
 
         # least-squares solve
         T, _, _, _ = lstsq(X, np.column_stack((xout, yout, zout)), rcond=None)
@@ -173,14 +176,15 @@ def warp_nodes(
     if backward_compatible:
         sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
         sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
+        # this is one ugly hack: thisx and thisy are 1-based in MATLAB
+        # but 0-based in Python; the rest of the code is to produce exact
+        # same results as MATLAB given the SAME input, that means thisx and 
+        # thisy needs to be 1-based, but we need to shift it back to 0-based 
+        # when slicing
     else:
         sampled_x_idx = surface_mapping["sampled_x_idx"]
         sampled_y_idx = surface_mapping["sampled_y_idx"]
-    # this is one ugly hack: thisx and thisy are 1-based in MATLAB
-    # but 0-based in Python; the rest of the code is to produce exact
-    # same results as MATLAB given the SAME input, that means thisx and 
-    # thisy needs to be 1-based, but we need to shift it back to 0-based 
-    # when slicing
+
     
     # Convert MATLAB 1-based inclusive ranges to Python slices
     # If thisx/thisy are consecutive integer indices:
