@@ -655,6 +655,7 @@ def build_mapping(
     bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
     conformal_jump: int = 1, # original `conformalJump`
     n_anchors: int = 16, # number of anchor points for conformal mapping, options: 4, 8 or 16
+    alignment_patch_size: int = 21,  # size of the local patch for alignment
     *,
     verbose: bool = False,
     backward_compatible: bool = False  # for MATLAB compatibility
@@ -762,7 +763,7 @@ def build_mapping(
     map_off_aligned = align_mapped_surface(
         on_sac_surface, off_sac_surface,
         mapped_on, mapped_off,
-        x_limits, y_limits, conformal_jump
+        x_limits, y_limits, conformal_jump, alignment_patch_size
     )
 
     return {

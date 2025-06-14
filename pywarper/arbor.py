@@ -302,6 +302,7 @@ def warp_arbor(
     xyprofile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
     xyprofile_nbins: int = 20,
     xyprofile_smooth: float = 1.0,
+    skeleton_nodes_scale: float = 1.0,
     backward_compatible: bool = False,
     verbose: bool = False,
 ) -> Skeleton:
@@ -361,7 +362,7 @@ def warp_arbor(
        reference planes in further analyses.
     """
 
-    nodes = skel.nodes.astype(float)
+    nodes = skel.nodes.astype(float) * skeleton_nodes_scale  # scale to the surface unit, which is often μm
 
     # if not backward_compatible:
     #     nodes[:, :2] -= 1
@@ -383,6 +384,8 @@ def warp_arbor(
         on_sac_pos=on_sac_pos,
         off_sac_pos=off_sac_pos,
     )
+
+    normalized_nodes /= skeleton_nodes_scale
 
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
