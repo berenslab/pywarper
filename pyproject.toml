@@ -13,7 +13,7 @@ dependencies = [
     "numpy>=2.2.0",
     "pygridfit>=0.1.5",
     "scipy>=1.15.0",
-    "skeliner>=0.1.5",
+    "skeliner>=0.1.6",
     "watermark>=2.5.0",
 ]
 license = "GPL-3.0-or-later"

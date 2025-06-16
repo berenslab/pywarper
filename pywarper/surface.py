@@ -780,5 +780,5 @@ def build_mapping(
         "off_sac_surface": off_sac_surface, # formerly `thisVZmaxmesh`
         "n_anchors": n_anchors,
         "conformal_jump": conformal_jump,
-        "meta": {"date": time.strftime("%Y-%m-%d %H:%M:%S"), "version": _PYWARPER_VERSION}
+        "meta": {"mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"), "pywarper_version": _PYWARPER_VERSION}
     }
