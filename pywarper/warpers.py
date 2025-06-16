@@ -1,12 +1,12 @@
 """
-pywarper.arbor
+pywarper.warpers
 ==============
-Spatial warping and profiling utilities for **neuronal arbor reconstructions**.
+Spatial warping and profiling utilities for **neuronal skeleton reconstructions**.
 
 This module takes a neuronal tree (nodes+edges) and the previously‑computed
 ON/OFF Starburst Amacrine Cell (SAC) surface mapping in order to
 
-1. **Warp the arbor into the flattened SAC coordinate frame** (`warp_arbor`).
+1. **Warp the skeleton into the flattened SAC coordinate frame** (`warp_nodes`).
    Each node is locally re‑registered with a polynomial least‑squares fit
    (`local_ls_registration`) that references both SAC layers so that depth is
    preserved relative to the curved retina.
@@ -31,15 +31,23 @@ Key algorithms
 
 
 import time
+from copy import deepcopy
+from importlib import metadata as _metadata
+from pathlib import Path
 from typing import Optional, Union
 
 import numpy as np
+import skeliner as sk
 import trimesh
 from numpy.linalg import lstsq
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
 from skeliner.core import Skeleton, _bfs_parents
+
+from .surface import build_mapping, fit_sac_surface
+
+_PYWARPER_VERSION = _metadata.version("pywarper")
 
 
 def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
@@ -163,7 +171,7 @@ def local_ls_registration(
 def warp_nodes(
         nodes: np.ndarray,
         surface_mapping: dict,
-        conformal_jump: int = 1,
+        conformal_jump: int | None = None,
         backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
     
@@ -190,6 +198,13 @@ def warp_nodes(
     # If thisx/thisy are consecutive integer indices:
     # x_vals = np.arange(thisx[0], thisx[-1] + 1)  # matches [thisx(1):thisx(end)] in MATLAB
     # y_vals = np.arange(thisy[0], thisy[-1] + 1)  # matches [thisy(1):thisy(end)] in MATLAB
+    if conformal_jump is None:
+        try:
+            conformal_jump = surface_mapping["conformal_jump"]
+        except KeyError:
+            raise ValueError(
+                "conformal_jump must be provided or found in surface_mapping."
+            )
     x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
     y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
 
@@ -220,8 +235,6 @@ def warp_nodes(
         off_subsampled_depths.ravel(order="F")
     ]) # old botInputPos
 
-    # Finally, the “mapped” output is unaffected by the flattening order mismatch,
-    # but we keep it consistent with MATLAB’s final step:
     on_output_pts = np.column_stack([
         mapped_on[:, 0],
         mapped_on[:, 1],
@@ -233,8 +246,6 @@ def warp_nodes(
         mapped_off[:, 1],
         np.median(off_subsampled_depths) * np.ones(mapped_off.shape[0])
     ])
-
-    # return top_input_pos, bot_input_pos, top_output_pos, bot_output_pos
 
     # Apply local least-squares registration to each node
     warped = local_ls_registration(nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts)
@@ -259,6 +270,7 @@ def normalize_nodes(
     space where the ON SAC surface is at `on_sac_pos` and the OFF SAC
     surface is at `off_sac_pos`. The z-coordinates are adjusted based on
     the provided median z-values of the ON and OFF SAC surfaces.
+    
     Parameters
     ----------
     nodes : np.ndarray
@@ -290,30 +302,30 @@ def normalize_nodes(
     return normalized_nodes
 
 
-def warp_arbor(
+def warp_skeleton(
     skel: Skeleton,
     surface_mapping: dict,
     voxel_resolution: Union[float, list] = [1., 1., 1.],
-    conformal_jump: int = 1,
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0,
-    zprofile_extends: list[float] | None = None, # [z_min, z_max]
-    zprofile_nbins: int = 120,
-    xyprofile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
-    xyprofile_nbins: int = 20,
-    xyprofile_smooth: float = 1.0,
+    z_profile_extends: list[float] | None = None, # [z_min, z_max]
+    z_profile_nbins: int = 120,
+    xy_profile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
+    xy_profile_nbins: int = 20,
+    xy_profile_smooth: float = 1.0,
     skeleton_nodes_scale: float = 1.0,
+    conformal_jump: int | None = None,
     backward_compatible: bool = False,
     verbose: bool = False,
 ) -> Skeleton:
     """
-    Applies a local surface flattening (warp) to a neuronal arbor using the results
+    Applies a local surface flattening (warp) to a neuronal skeleton using the results
     of previously computed surface mappings.
 
     Parameters
     ----------
     nodes : np.ndarray
-        (N, 3) array of [x, y, z] coordinates for the arbor to be warped.
+        (N, 3) array of [x, y, z] coordinates for the skeleton to be warped.
     edges : np.ndarray
         (E, 2) array of indices defining connectivity between nodes.
     radii : np.ndarray
@@ -364,11 +376,8 @@ def warp_arbor(
 
     nodes = skel.nodes.astype(float) * skeleton_nodes_scale  # scale to the surface unit, which is often μm
 
-    # if not backward_compatible:
-    #     nodes[:, :2] -= 1
-
     if verbose:
-        print("[pywarper] Warping arbor...")
+        print("[pywarper] Warping skeleton...")
         start_time = time.time()
     warped_nodes, med_z_on, med_z_off = warp_nodes(
         nodes,
@@ -390,8 +399,8 @@ def warp_arbor(
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
-    normalized_soma = skel.soma
-    normalized_soma.centre = normalized_nodes[0] * voxel_resolution  # soma is at the first node
+    normalized_soma = deepcopy(skel.soma)
+    normalized_soma.center = normalized_nodes[0] * voxel_resolution  # soma is at the first node
 
     skel_norm = Skeleton(
         soma   = normalized_soma,
@@ -399,28 +408,32 @@ def warp_arbor(
         edges  = skel.edges,      # same connectivity
         radii  = skel.radii,      # same radii dict
         ntype  = skel.ntype,      # same node types (if any) 
+        meta   = skel.meta.copy(), 
     )
 
-    z_profile = get_zprofile(skel_norm, z_window=zprofile_extends, nbins=zprofile_nbins)
+    z_profile = get_zprofile(skel_norm, extends=z_profile_extends, nbins=z_profile_nbins)
     xy_profile = get_xyprofile(
-        skel_norm, xy_window=xyprofile_extends, nbins=xyprofile_nbins, sigma_bins=xyprofile_smooth
+        skel_norm, extends=xy_profile_extends, nbins=xy_profile_nbins, smooth=xy_profile_smooth
     )
 
-    skel_norm.extra = {          
-        "warped_nodes": warped_nodes * voxel_resolution, # keep the pre-normed nodes for reference
-        "med_z_on":  float(med_z_on),
+    skel_norm.extra = {
+        "prenormed_nodes": warped_nodes * voxel_resolution,  # keep the pre-normed warped nodes for future use
+        "med_z_on": float(med_z_on),
         "med_z_off": float(med_z_off),
         "z_profile": z_profile,
         "xy_profile": xy_profile,
-        # "xy_shift": xy_shift,  # shift applied to the nodes
     }
+    skel_norm.meta.update({
+        "pywarper_version": _PYWARPER_VERSION,
+        "warped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    })
 
     return skel_norm
 
 def warp_mesh(
     mesh: trimesh.Trimesh, # mostly nm
     surface_mapping: dict, # mostly μm
-    conformal_jump: int = 1,
+    conformal_jump: int | None = None,
     on_sac_pos: float = 0.0, # μm
     off_sac_pos: float = 12.0, # μm
     mesh_vertices_scale: float = 1.0, # scale factor for mesh vertices, e.g., 1e-3 for nm to μm
@@ -468,6 +481,10 @@ def warp_mesh(
     warped_mesh.metadata["surface_mapping"] = surface_mapping
     warped_mesh.metadata["on_sac_pos"] = on_sac_pos
     warped_mesh.metadata["off_sac_pos"] = off_sac_pos
+    warped_mesh.metadata["pywarper_meta"] = {
+        "version": _PYWARPER_VERSION,
+        "warped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
     return warped_mesh
 
@@ -575,33 +592,26 @@ def gridder1d(
 
 def get_zprofile(
     skel: Skeleton,
-    z_window: Optional[list[float]] = None,
+    extends: list[float] | None = None,
     nbins: int = 120, 
 ) -> dict:
     """
-    Compute a 1-D depth profile (length per z-bin) from a warped arbor.
+    Compute a 1-D depth profile (length per z-bin) from a warped skeleton.
 
     Parameters
     ----------
-    warped_arbor
-        Dict returned by ``warp_arbor()``. Must contain
+    skel
+        Dict returned by ``warp_skeleton()``. Must contain
             'nodes'   – (N, 3) xyz coordinates in µm,
             'edges'   – (E, 2) SWC child/parent pairs (1-based),
             'medVZmin', 'medVZmax'  – median of the ON and OFF SAC surfaces.
-    z_res
-        Spatial resolution along z (µm / voxel) *after* warping. Depends on
-        what unit the medvzmin/max were in. If they were already in µm, 
-        then z_res = 1. If they were in pixels, then z_res = voxel_size.
-    z_window
+    extends
         Two floats ``[z_min, z_max]`` that define *one* common physical
         span (µm) for **all** cells *after* the ON/OFF anchoring.
         •  Default ``None`` means “just enough to cover the deepest /
            shallowest point of *this* cell” (original behaviour).  
         •  Example  ``z_window = (-6.0, 18.0)``  keeps a 6-µm margin on
            both sides of the SAC band while still centring it at 0–12 µm.
-    on_sac_pos, off_sac_pos
-        Desired positions of the starburst layers in the *final* profile
-        (µm).  Defaults reproduce the numbers quoted in Sümbül et al. 2014.
     nbins
         Number of evenly-spaced output bins along z.
 
@@ -620,10 +630,10 @@ def get_zprofile(
     """
 
     # 0) decide the common span
-    if z_window is None:
+    if extends is None:
         z_min, z_max = None, None                  # auto-span
     else:
-        z_min, z_max = z_window                    # user-fixed span
+        z_min, z_max = extends                    # user-fixed span
 
     # 1) edge lengths and mid-point nodes   
     density, nodes = segment_lengths(skel)
@@ -649,34 +659,35 @@ def get_zprofile(
     z_dist = gridder1d(z_samples / 2, density, nbins)  # /2 → [-0.5, 0.5]
     z_dist *= density.sum() / (z_dist.sum())
 
-    # 5) bin centres & rescaled arbor
+    # 5) bin centres & rescaled skeleton
     x_um = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
 
     res = {
-            "z_x": x_um,
-            "z_dist": z_dist,
-            "z_hist": z_hist,
-            "z_window": [z_min, z_max],
+            "x": x_um,
+            "distribution": z_dist,
+            "histogram": z_hist,
+            "extends": [z_min, z_max],
+            "nbins": nbins,
         }
 
     return res
 
 def get_xyprofile(
     skel: Skeleton,       
-    xy_window: Optional[list[float]] = None,
+    extends: Optional[list[float]] = None,
     nbins: int = 20,
-    sigma_bins: float = 1.0,
+    smooth: float = 1.0,
 ) -> dict:
     """
     2-D dendritic-length density on a fixed XY grid (no per-cell rotation).
 
     Parameters
     ----------
-    warped_arbor   
-        output of ``warp_arbor()`` (nodes in µm).
+    warped_skeleton   
+        output of ``warp_skeleton()`` (nodes in µm).
     xy_window      
         (xmin, xmax, ymin, ymax) in µm that *all* cells
-                     share.  If ``None`` use this arbor's tight bounding box.
+                     share.  If ``None`` use this skeleton's tight bounding box.
     nbins          
         number of bins along X **and** Y (default 20).
 
@@ -696,11 +707,11 @@ def get_xyprofile(
     density, mid = segment_lengths(skel)
 
     # 2) decide the common window
-    if xy_window is None:
+    if extends is None:
         xmin, xmax = mid[:, 0].min(), mid[:, 0].max()
         ymin, ymax = mid[:, 1].min(), mid[:, 1].max()
     else:
-        xmin, xmax, ymin, ymax = xy_window
+        xmin, xmax, ymin, ymax = extends
 
     # 3) 2-D histogram weighted by edge length and density
     xy_hist, x_edges, y_edges = np.histogram2d(
@@ -710,7 +721,7 @@ def get_xyprofile(
         weights=density
     )
 
-    xy_dist = gaussian_filter(xy_hist, sigma=sigma_bins, mode='nearest')
+    xy_dist = gaussian_filter(xy_hist, sigma=smooth, mode='nearest')
     xy_dist *= density.sum() / xy_dist.sum()   # keep Σ = total length
 
     # 5) bin centres for plotting
@@ -718,13 +729,276 @@ def get_xyprofile(
     y = 0.5 * (y_edges[:-1] + y_edges[1:])
 
     res = {
-        "xy_x": x,
-        "xy_y": y,
-        "xy_dist": xy_dist,
-        "xy_hist": xy_hist,
-        "xy_window": [xmin, xmax, ymin, ymax],
-        "xy_nbins": nbins,
-        "xy_sigma_bins": sigma_bins,
+        "x": x,
+        "y": y,
+        "distribution": xy_dist,
+        "histogram": xy_hist,
+        "extends": [xmin, xmax, ymin, ymax],
+        "nbins": nbins,
+        "smooth": smooth,
     }
 
     return res
+
+
+
+class Warper:
+    """High‑level interface around *pywarper* for IPL flattening."""
+
+    def __init__(
+        self,
+        off_sac_points: dict[str, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+        on_sac_points : dict[str, np.ndarray] | tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
+        swc_path: str | None = None,
+        *,
+        voxel_resolution: list[float] = [1.0, 1.0, 1.0],
+        verbose: bool = False,
+    ) -> None:
+
+        self.voxel_resolution = voxel_resolution
+        self.verbose = verbose
+        self.swc_path = swc_path
+
+        if off_sac_points is not None:
+            self.off_sac_points = self._as_xyz(off_sac_points)
+        if on_sac_points is not None:
+            self.on_sac_points  = self._as_xyz(on_sac_points)
+
+        if swc_path is not None:
+            self.swc_path = swc_path
+            self.load_swc(swc_path)          # raw SWC → self.nodes / edges / radii
+        else:
+            self.swc_path = None
+
+    # ---------------------------- IO -------------------------------------
+    def load_swc(self, swc_path: str | None = None) -> "Warper":
+        """Load the skeleton from *swc_path*."""
+
+        if self.verbose:
+            print(f"[pywarper] Loading skeleton → {self.swc_path}")
+
+        if swc_path is None:
+            swc_path = self.swc_path
+
+        if swc_path is not None:
+            self.skeleton = sk.io.load_swc(swc_path)
+        else:
+            raise ValueError("SWC path must be provided to load the skeleton.")
+
+        return self
+
+    @staticmethod
+    def _as_xyz(data) -> tuple[np.ndarray, np.ndarray, np.ndarray]: # for load_sac()
+        """Accept *dict* or tuple and return *(x, y, z)* numpy arrays."""
+        if isinstance(data, dict):
+            return np.asarray(data["x"]), np.asarray(data["y"]), np.asarray(data["z"])
+        if isinstance(data, (tuple, list)) and len(data) == 3:
+            return map(np.asarray, data)  # type: ignore[arg-type]
+        raise TypeError("SAC data must be a mapping with keys x/y/z or a 3‑tuple of arrays.")
+
+    def load_sac(self, off_sac_points, on_sac_points) -> "Warper":
+        """Load the SAC meshes from *off_sac_points* and *on_sac_points*."""
+        if self.verbose:
+            print("[pywarper] Loading SAC meshes …")
+        self.off_sac_points = self._as_xyz(off_sac_points)
+        self.on_sac_points = self._as_xyz(on_sac_points)
+        return self
+
+    def load_warped_skeleton(self, 
+            filepath: str,
+            med_z_on: float | None = None,
+            med_z_off: float | None = None,
+    ) -> None:
+        """Load a warped skeleton from *swc_path*."""
+        path = Path(filepath)
+
+        if path.suffix.lower() == ".swc":
+            self.warped_skeleton = sk.io.load_swc(path)
+
+            if (med_z_on is not None) and (med_z_off is not None):
+                self.warped_skeleton.extra["med_z_on"] = float(med_z_on)
+                self.warped_skeleton.extra["med_z_off"] = float(med_z_off)
+            else:
+                self.warped_skeleton.extra["med_z_on"] = None
+                self.warped_skeleton.extra["med_z_off"] = None
+        elif path.suffix.lower() == ".npz":
+            self.warped_skeleton = sk.io.load_npz(path)
+            
+        if self.verbose:
+            print(f"[pywarper] Loaded warped skeleton → {path}")
+
+    # ---------------------------- Core -----------------------------------
+
+    def fit_surfaces(self, 
+                     xmax:int | float | None = None, 
+                     ymax:int | float | None= None, 
+                     stride:int = 3, 
+                     smoothness: int = 15, 
+                     backward_compatible:bool=False
+     ) -> "Warper":
+        """Fit ON / OFF SAC meshes with *pygridfit*."""
+        if self.verbose:
+            print("[pywarper] Fitting SAC surfaces …")
+
+        if backward_compatible is False and (xmax is None or ymax is None):
+            # use the bounding box of the skeleton
+            xmax=max(self.off_sac_points[0].max(), self.on_sac_points[0].max())
+            ymax=max(self.off_sac_points[1].max(), self.on_sac_points[1].max())
+
+        _t0 = time.time()
+        self.off_sac_surface, *_ = fit_sac_surface(
+            x=self.off_sac_points[0], 
+            y=self.off_sac_points[1],
+            z=self.off_sac_points[2], 
+            stride=stride,
+            smoothness=smoothness,
+            xmax=xmax, ymax=ymax,
+            backward_compatible=backward_compatible,
+        )
+        if self.verbose:
+            print(f"↳ fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds.")
+        
+        _t0 = time.time()
+        self.on_sac_surface, *_ = fit_sac_surface(
+            x=self.on_sac_points[0], 
+            y=self.on_sac_points[1], 
+            z=self.on_sac_points[2], 
+            smoothness=smoothness,
+            xmax=xmax, ymax=ymax,
+            backward_compatible=backward_compatible,
+        )
+        if self.verbose:
+            print(f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds.")
+        return self
+
+    def build_mapping(self, 
+                      bounds: np.ndarray | tuple | str | None = "local",
+                      conformal_jump: int = 2, 
+                      n_anchors: int = 16,
+                      backward_compatible: bool = False,
+    ) -> "Warper":
+        """Create the quasi‑conformal surface mapping."""
+        if self.off_sac_surface is None or self.on_sac_surface is None:
+            raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
+
+        if bounds is None or bounds == "local":
+            # skeleton-derived box (rounded to int so it plays nicely with
+            # backward-compatible 1-based code paths)
+            xmin, xmax = self.skeleton.nodes[:, 0].min(), self.skeleton.nodes[:, 0].max()
+            ymin, ymax = self.skeleton.nodes[:, 1].min(), self.skeleton.nodes[:, 1].max()
+            bounds = np.array([xmin, xmax, ymin, ymax], dtype=float)
+        elif bounds == "global":
+            # use whichever SAC fit is larger in each axis
+            nx = max(self.on_sac_surface.shape[0], self.off_sac_surface.shape[0])
+            ny = max(self.on_sac_surface.shape[1], self.off_sac_surface.shape[1])
+            bounds = np.array([0, nx, 0, ny], dtype=float)
+        else:
+            bounds = np.asarray(bounds, dtype=float)
+            if bounds.shape != (4,):
+                raise ValueError("Bounds must be a 4‑element array or tuple (x_min, x_max, y_min, y_max).")
+        
+        if self.verbose:
+            print("[pywarper] Building mapping …")
+        self.mapping: dict = build_mapping(
+            self.on_sac_surface,
+            self.off_sac_surface,
+            bounds,
+            conformal_jump=conformal_jump,
+            n_anchors=n_anchors,
+            backward_compatible=backward_compatible,
+            verbose=self.verbose,
+        )
+        return self
+
+    def warp_skeleton(self, 
+                z_profile_extends: list[float] | None = None,
+                z_profile_nbins: int = 120,
+                xy_profile_extends: list[float] | None = None,
+                xy_profile_nbins: int = 20,
+                xy_profile_smooth: float = 1.,
+                skeleton_nodes_scale: float = 1.0,
+                voxel_resolution: list[float] | None = None, 
+                conformal_jump: int | None = None,
+                backward_compatible: bool = False,
+    ) -> "Warper":
+        """Apply the mapping to the skeleton."""
+        if self.mapping is None:
+            raise RuntimeError("Mapping missing. Call build_mapping() first.")
+        
+        if voxel_resolution is None:
+            voxel_resolution = self.voxel_resolution
+
+        self.warped_skeleton = warp_skeleton(
+            self.skeleton,
+            self.mapping,
+            voxel_resolution=voxel_resolution,
+            conformal_jump=conformal_jump,
+            z_profile_extends=z_profile_extends,
+            z_profile_nbins=z_profile_nbins,
+            xy_profile_extends=xy_profile_extends,
+            xy_profile_nbins=xy_profile_nbins,
+            xy_profile_smooth=xy_profile_smooth,
+            backward_compatible=backward_compatible,
+            skeleton_nodes_scale=skeleton_nodes_scale,
+            verbose=self.verbose,
+        )
+        return self
+    
+
+    def renormalize(self, 
+        on_sac_pos: float = 0.0,
+        off_sac_pos: float = 12.0,
+        z_profile_extends: list[float] | None = None, # [z_min, z_max]
+        z_profile_nbins: int | None = None,
+        xy_profile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
+        xy_profile_nbins: int | None = None,
+        xy_profile_smooth: float | None = None,
+    ) -> Skeleton:
+        """Renormalize the warped skeleton to the desired ON/OFF SAC positions."""
+        if self.warped_skeleton is None:
+            raise RuntimeError("Warped skeleton missing. Call warp_skeleton() first.")
+        else:
+            renormed_nodes = normalize_nodes(
+                self.warped_skeleton.extra["prenormed_nodes"],
+                med_z_on=self.warped_skeleton.extra["med_z_on"],
+                med_z_off=self.warped_skeleton.extra["med_z_off"],
+                on_sac_pos=on_sac_pos,
+                off_sac_pos=off_sac_pos,
+            )
+
+        soma_renormed = deepcopy(self.warped_skeleton.soma)
+        soma_renormed.centre = renormed_nodes[0] * self.voxel_resolution
+
+        skel_renormed = Skeleton(
+            soma   = soma_renormed,
+            nodes  = renormed_nodes,
+            edges  = self.warped_skeleton.edges,     
+            radii  = self.warped_skeleton.radii,      
+            ntype  = self.warped_skeleton.ntype,
+            meta = self.warped_skeleton.meta.copy(),  # copy metadata
+        )
+
+        z_profile = get_zprofile(skel_renormed, 
+                                 extends=z_profile_extends if z_profile_extends is not None else self.warped_skeleton.extra["z_profile"]["extends"],
+                                 nbins=z_profile_nbins if z_profile_nbins is not None else self.warped_skeleton.extra["z_profile"]["nbins"])
+        xy_profile = get_xyprofile(
+            skel_renormed, 
+            extends=xy_profile_extends if xy_profile_extends is not None else self.warped_skeleton.extra["xy_profile"]["extends"],
+            nbins=xy_profile_nbins if xy_profile_nbins is not None else self.warped_skeleton.extra["xy_profile"]["nbins"],
+            smooth=xy_profile_smooth if xy_profile_smooth is not None else self.warped_skeleton.extra["xy_profile"]["smooth"],
+        ) 
+
+        skel_renormed.extra = {
+            "prenormed_nodes": self.warped_skeleton.extra["prenormed_nodes"], # keep the pre-normed warped nodes for future use
+            "med_z_on":  float(self.warped_skeleton.extra["med_z_on"]),
+            "med_z_off": float(self.warped_skeleton.extra["med_z_off"]),
+            "z_profile": z_profile,
+            "xy_profile": xy_profile,
+        }
+        skel_renormed.meta.update({
+            "pywarper_version": _PYWARPER_VERSION,
+            "renormed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+
+        return skel_renormed
+

@@ -44,6 +44,9 @@ except ImportError:
     )
     print(_WARN_MSG)
 
+from importlib import metadata as _metadata
+
+_PYWARPER_VERSION = _metadata.version("pywarper")
 
 def fit_sac_surface(
     x: np.ndarray,
@@ -775,5 +778,7 @@ def build_mapping(
         "sampled_y_idx": sampled_y_idx, # formerly `thisy`
         "on_sac_surface": on_sac_surface, # formerly `thisVZminmesh`
         "off_sac_surface": off_sac_surface, # formerly `thisVZmaxmesh`
-        "n_anchors": n_anchors
+        "n_anchors": n_anchors,
+        "conformal_jump": conformal_jump,
+        "meta": {"mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"), "pywarper_version": _PYWARPER_VERSION}
     }
