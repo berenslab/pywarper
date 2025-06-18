@@ -10,10 +10,10 @@ ON/OFF Starburst Amacrine Cell (SAC) surface mapping in order to
    Each node is locally re‑registered with a polynomial least‑squares fit
    (`local_ls_registration`) that references both SAC layers so that depth is
    preserved relative to the curved retina.
-2. **Compute depth (z) profiles** (`get_zprofile`).  Edge lengths are first binned
+2. **Compute depth (z) profiles** (`get_z_profile`).  Edge lengths are first binned
    directly (histogram) and then re‑estimated with a Kaiser–Bessel gridding
    kernel to obtain a smooth 1‑D density across the inner plexiform layer.
-3. **Compute planar (xy) density maps** (`get_xyprofile`).  Dendritic length is
+3. **Compute planar (xy) density maps** (`get_xy_profile`).  Dendritic length is
    accumulated on a user‑defined 2‑D grid and optionally Gaussian‑smoothed for
    visualisation or group statistics.
 
@@ -310,6 +310,7 @@ def warp_skeleton(
     off_sac_pos: float = 12.0,
     z_profile_extends: list[float] | None = None, # [z_min, z_max]
     z_profile_nbins: int = 120,
+    z_profile_hdr_mass: float = 0.95,
     xy_profile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
     xy_profile_nbins: int = 20,
     xy_profile_smooth: float = 1.0,
@@ -411,8 +412,8 @@ def warp_skeleton(
         meta   = skel.meta.copy(), 
     )
 
-    z_profile = get_zprofile(skel_norm, extends=z_profile_extends, nbins=z_profile_nbins)
-    xy_profile = get_xyprofile(
+    z_profile = get_z_profile(skel_norm, extends=z_profile_extends, nbins=z_profile_nbins, hdr_mass=z_profile_hdr_mass)
+    xy_profile = get_xy_profile(
         skel_norm, extends=xy_profile_extends, nbins=xy_profile_nbins, smooth=xy_profile_smooth
     )
 
@@ -489,7 +490,7 @@ def warp_mesh(
     return warped_mesh
 
 # =====================================================================
-# helpers for get_zprofile()
+# helpers for get_z_profile()
 # =====================================================================
 
 def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
@@ -587,13 +588,14 @@ def gridder1d(
     return np.abs(F)
 
 # =====================================================================
-# helpers for get_zprofile() END
+# helpers for get_z_profile() END
 # =====================================================================
 
-def get_zprofile(
+def get_z_profile(
     skel: Skeleton,
     extends: list[float] | None = None,
     nbins: int = 120, 
+    hdr_mass: float = 0.95,
 ) -> dict:
     """
     Compute a 1-D depth profile (length per z-bin) from a warped skeleton.
@@ -662,17 +664,21 @@ def get_zprofile(
     # 5) bin centres & rescaled skeleton
     x_um = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
 
+    hdr_intervals = hdr(x_um, z_dist, mass=hdr_mass)
+
     res = {
             "x": x_um,
             "distribution": z_dist,
             "histogram": z_hist,
             "extends": [z_min, z_max],
             "nbins": nbins,
+            "hdr": hdr_intervals,
+            "hdr_mass": hdr_mass,
         }
 
     return res
 
-def get_xyprofile(
+def get_xy_profile(
     skel: Skeleton,       
     extends: Optional[list[float]] = None,
     nbins: int = 20,
@@ -739,6 +745,47 @@ def get_xyprofile(
     }
 
     return res
+
+def hdr(z_centres, z_density, mass=0.95):
+    """
+    High Density Region (HDR) estimator.
+
+    Parameters
+    ----------
+    z_centres : (N,) bin centres (µm)
+    z_density : (N,) density per bin (any units)
+    mass      : float, 0 < mass ≤ 1 (e.g. 0.95)
+
+    Example
+    -------
+    >>> hdr_multimodal(z, d, 0.95)
+    [array([ -2.1,  1.7]),   # ON sheet
+     array([ 10.3, 13.9])]   # OFF sheet
+    """
+    p = z_density / z_density.sum()          # normalise → probability
+    order = np.argsort(p)[::-1]              # bins from high to low density
+
+    selected = []
+    cum = 0.0
+    for idx in order:
+        selected.append(idx)
+        cum += p[idx]
+        if cum >= mass:
+            break
+
+    sel = np.sort(selected)                 # ascending bin indices
+    # split where gaps > 1 bin
+    gaps = np.where(np.diff(sel) > 1)[0]
+    groups = [g for g in np.split(sel, gaps + 1)]
+
+    intervals = [np.array([z_centres[g[0]], z_centres[g[-1]]]) for g in groups if len(g) > 0]
+    # intervals = []
+    # half = 0.5 * np.diff(z_centres).mean()       # assume uniform spacing
+    # for g in groups:
+    #     z_lo = z_centres[g[0]] - half
+    #     z_hi = z_centres[g[-1]] + half
+    #     intervals.append(np.array([z_lo, z_hi]))
+    return intervals
 
 
 
@@ -913,6 +960,7 @@ class Warper:
     def warp_skeleton(self, 
                 z_profile_extends: list[float] | None = None,
                 z_profile_nbins: int = 120,
+                z_profile_hdr_mass: float = 0.95,
                 xy_profile_extends: list[float] | None = None,
                 xy_profile_nbins: int = 20,
                 xy_profile_smooth: float = 1.,
@@ -935,6 +983,7 @@ class Warper:
             conformal_jump=conformal_jump,
             z_profile_extends=z_profile_extends,
             z_profile_nbins=z_profile_nbins,
+            z_profile_hdr_mass=z_profile_hdr_mass,
             xy_profile_extends=xy_profile_extends,
             xy_profile_nbins=xy_profile_nbins,
             xy_profile_smooth=xy_profile_smooth,
@@ -950,6 +999,7 @@ class Warper:
         off_sac_pos: float = 12.0,
         z_profile_extends: list[float] | None = None, # [z_min, z_max]
         z_profile_nbins: int | None = None,
+        z_profile_hdr_mass: float | None = None,
         xy_profile_extends: list[float] | None = None, # [x_min, x_max, y_min, y_max]
         xy_profile_nbins: int | None = None,
         xy_profile_smooth: float | None = None,
@@ -967,7 +1017,7 @@ class Warper:
             )
 
         soma_renormed = deepcopy(self.warped_skeleton.soma)
-        soma_renormed.centre = renormed_nodes[0] * self.voxel_resolution
+        soma_renormed.center = renormed_nodes[0] * self.voxel_resolution
 
         skel_renormed = Skeleton(
             soma   = soma_renormed,
@@ -978,10 +1028,13 @@ class Warper:
             meta = self.warped_skeleton.meta.copy(),  # copy metadata
         )
 
-        z_profile = get_zprofile(skel_renormed, 
-                                 extends=z_profile_extends if z_profile_extends is not None else self.warped_skeleton.extra["z_profile"]["extends"],
-                                 nbins=z_profile_nbins if z_profile_nbins is not None else self.warped_skeleton.extra["z_profile"]["nbins"])
-        xy_profile = get_xyprofile(
+        z_profile = get_z_profile(
+            skel_renormed, 
+            extends=z_profile_extends if z_profile_extends is not None else self.warped_skeleton.extra["z_profile"]["extends"],
+            nbins=z_profile_nbins if z_profile_nbins is not None else self.warped_skeleton.extra["z_profile"]["nbins"],
+            hdr_mass=z_profile_hdr_mass if z_profile_hdr_mass is not None else self.warped_skeleton.extra["z_profile"]["hdr_mass"],
+        )
+        xy_profile = get_xy_profile(
             skel_renormed, 
             extends=xy_profile_extends if xy_profile_extends is not None else self.warped_skeleton.extra["xy_profile"]["extends"],
             nbins=xy_profile_nbins if xy_profile_nbins is not None else self.warped_skeleton.extra["xy_profile"]["nbins"],
