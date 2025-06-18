@@ -312,7 +312,7 @@ def warp_skeleton(
     z_profile_bin_size: float = 1.,
     z_profile_hdr_mass: float = 0.95,
     xy_profile_extents: list[float] | None = None, # [x_min, x_max, y_min, y_max]
-    xy_profile_bin_size: float = 2.,
+    xy_profile_bin_size: float = 20.,
     xy_profile_smooth: float = 1.0,
     skeleton_nodes_scale: float = 1.0,
     conformal_jump: int | None = None,
@@ -957,7 +957,7 @@ class Warper:
                 z_profile_bin_size: float = 1, # um
                 z_profile_hdr_mass: float = 0.95,
                 xy_profile_extents: list[float] | None = None,
-                xy_profile_bin_size: float = 2, # um
+                xy_profile_bin_size: float = 20, # um
                 xy_profile_smooth: float = 1.,
                 skeleton_nodes_scale: float = 1.0,
                 voxel_resolution: list[float] | None = None, 
