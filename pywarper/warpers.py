@@ -309,10 +309,10 @@ def warp_skeleton(
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0,
     z_profile_extent: list[float] | None = None, # [z_min, z_max]
-    z_profile_nbins: int = 120,
+    z_profile_bin_size: float = 1.,
     z_profile_hdr_mass: float = 0.95,
     xy_profile_extents: list[float] | None = None, # [x_min, x_max, y_min, y_max]
-    xy_profile_nbins: int = 20,
+    xy_profile_bin_size: float = 2.,
     xy_profile_smooth: float = 1.0,
     skeleton_nodes_scale: float = 1.0,
     conformal_jump: int | None = None,
@@ -412,9 +412,9 @@ def warp_skeleton(
         meta   = skel.meta.copy(), 
     )
 
-    z_profile = get_z_profile(skel_norm, extents=z_profile_extent, nbins=z_profile_nbins, hdr_mass=z_profile_hdr_mass)
+    z_profile = get_z_profile(skel_norm, extent=z_profile_extent, bin_size=z_profile_bin_size, hdr_mass=z_profile_hdr_mass)
     xy_profile = get_xy_profile(
-        skel_norm, extents=xy_profile_extents, nbins=xy_profile_nbins, smooth=xy_profile_smooth
+        skel_norm, extents=xy_profile_extents, bin_size=xy_profile_bin_size, smooth=xy_profile_smooth
     )
 
     skel_norm.extra = {
@@ -593,8 +593,8 @@ def gridder1d(
 
 def get_z_profile(
     skel: Skeleton,
-    extents: list[float] | None = None,
-    nbins: int = 120, 
+    extent: list[float] | None = None,
+    bin_size: float = 1, # µm
     hdr_mass: float = 0.95,
 ) -> dict:
     """
@@ -607,7 +607,7 @@ def get_z_profile(
             'nodes'   – (N, 3) xyz coordinates in µm,
             'edges'   – (E, 2) SWC child/parent pairs (1-based),
             'medVZmin', 'medVZmax'  – median of the ON and OFF SAC surfaces.
-    extents
+    extent
         Two floats ``[z_min, z_max]`` that define *one* common physical
         span (µm) for **all** cells *after* the ON/OFF anchoring.
         •  Default ``None`` means “just enough to cover the deepest /
@@ -632,81 +632,86 @@ def get_z_profile(
     """
 
     # 0) decide the common span
-    if extents is None:
-        z_min, z_max = None, None                  # auto-span
-    else:
-        z_min, z_max = extents                    # user-fixed span
-
-    # 1) edge lengths and mid-point nodes   
     density, nodes = segment_lengths(skel)
 
-    # 2) decide bin edges *once*
-    z_phys = nodes[:, 2]                         # physical z-coordinates (µm)
-    if z_min is None or z_max is None:
-        # grow just enough to contain this cell, then round to one bin
-        z_min = np.floor(z_phys.min())
-        z_max = np.ceil(z_phys.max())
+    z_vals = nodes[:, 2] # physical z-coordinates (µm)
+    if extent is None:
+        z_min, z_max = np.floor(z_vals.min()), np.ceil(z_vals.max())
+    else:
+        z_min, z_max = extent
 
-    bin_edges = np.linspace(z_min, z_max, nbins + 1)
+    # 1) bin edges -------------------------------------------------------------
+    n_bins = int(np.ceil((z_max - z_min) / bin_size))
+    bin_edges = z_min + np.arange(n_bins + 1) * bin_size
+    bin_edges[-1] = z_max                         # clip, never exceed window
 
-    # 3) histogram-based z profile
-    z_hist, _ = np.histogram(z_phys, bins=bin_edges, weights=density)
+    # 2) histogram -------------------------------------------------------------
+    z_hist, _ = np.histogram(z_vals, bins=bin_edges, weights=density)
     z_hist *= density.sum() / (z_hist.sum())
 
-    # 4) Kaiser–Bessel gridded version (needs centred –0.5…0.5 inputs) 
+    # 3) Kaiser–Bessel gridding (needs centred –0.5 … 0.5) --------------------
     centre = (z_min + z_max) / 2
     halfspan = (z_max - z_min) / 2
-    z_samples = (z_phys - centre) / halfspan # now in [-1, 1]
+    z_samples = (z_vals - centre) / halfspan # now in [-1, 1]
 
-    z_dist = gridder1d(z_samples / 2, density, nbins)  # /2 → [-0.5, 0.5]
+    z_dist = gridder1d(z_samples / 2, density, n_bins)  # /2 → [-0.5, 0.5]
     z_dist *= density.sum() / (z_dist.sum())
 
-    # 5) bin centres & rescaled skeleton
+     # 4) centres & HDR ---------------------------------------------------------
     x_um = 0.5 * (bin_edges[1:] + bin_edges[:-1])  # centre of each bin
-
     hdr_intervals = hdr(x_um, z_dist, mass=hdr_mass)
 
     res = {
             "x": x_um,
             "distribution": z_dist,
             "histogram": z_hist,
-            "extents": [z_min, z_max],
-            "nbins": nbins,
+            "extent": [z_min, z_max],
+            "n_bins": n_bins,
+            "bin_size": bin_size,
             "hdr": hdr_intervals,
             "hdr_mass": hdr_mass,
         }
 
     return res
 
-def _square_edges(xmin, xmax, ymin, ymax, nbins):
-    dx, dy = xmax - xmin, ymax - ymin
-    if dx >= dy:
-        w  = dx / nbins
-        nx, ny = nbins, int(np.ceil(dy / w))
-    else:
-        w  = dy / nbins
-        ny, nx = nbins, int(np.ceil(dx / w))
-
-    xmax = xmin + nx * w      # may extend the shorter side
-    ymax = ymin + ny * w
-
-    x_edges = np.linspace(xmin, xmax, nx + 1)
-    y_edges = np.linspace(ymin, ymax, ny + 1)
-
-    # insure inclusion of points sitting numerically on the upper edge
+def _edges_from_bin_size(lo: float, hi: float, bin_size: float) -> np.ndarray:
+    """Generate edges ≥ bin_size wide, last bin clipped to *hi*."""
+    n = int(np.ceil((hi - lo) / bin_size))
+    edges = lo + np.arange(n + 1) * bin_size
+    edges[-1] = hi                                      # ensure inclusion
     eps = np.finfo(float).eps
-    x_edges[-1] += eps * max(1.0, abs(x_edges[-1]))
-    y_edges[-1] += eps * max(1.0, abs(y_edges[-1]))
-    return x_edges, y_edges
+    edges[-1] += eps * max(1.0, abs(edges[-1]))         # numeric cushion
+    return edges
 
 def get_xy_profile(
     skel: Skeleton,
     extents: Optional[list[float]] = None,
-    nbins: int = 20,
+    bin_size: float = 2.0,       
     smooth: float = 1.0,
 ) -> dict:
+    """
+    Planar (x-y) dendritic-length density on a **square** grid.
+
+    Parameters
+    ----------
+    extents
+        Fixed window ``[xmin, xmax, ymin, ymax]`` (µm).  *None* → tight box.
+    bin_size
+        Side length of each square bin (µm).  `edges = lo + k·bin_size`.
+        The window is *expanded* to the next multiple so that every bin is
+        exactly `bin_size` wide.  (This guarantees comparability.)
+    smooth
+        σ of the Gaussian kernel (bins) applied to the histogram.
+
+    Returns
+    -------
+    dict  with keys ``x`` / ``y`` (centres), ``distribution`` (smoothed),
+           ``histogram`` (raw), ``extents``, ``bin_size``, ``nbins`` …
+    """
+
     density, mid = segment_lengths(skel)
 
+    # 0) bounding box ----------------------------------------------------------
     if extents is None:
         x_all = np.concatenate((mid[:, 0], skel.nodes[:, 0]))
         y_all = np.concatenate((mid[:, 1], skel.nodes[:, 1]))
@@ -715,7 +720,9 @@ def get_xy_profile(
     else:
         xmin, xmax, ymin, ymax = extents
 
-    x_edges, y_edges = _square_edges(xmin, xmax, ymin, ymax, nbins)
+    # 1) build edges so that *every* cell is square (bin_size × bin_size) ------
+    x_edges = _edges_from_bin_size(xmin, xmax, bin_size)
+    y_edges = _edges_from_bin_size(ymin, ymax, bin_size)
 
     xy_hist, _, _ = np.histogram2d(
         mid[:, 0], mid[:, 1],
@@ -735,7 +742,8 @@ def get_xy_profile(
         "distribution": xy_dist,
         "histogram": xy_hist,
         "extents": [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]],
-        "nbins": (len(x) , len(y)),     # may differ if dx ≠ dy
+        "n_bins": (len(x) , len(y)),     # may differ if dx ≠ dy
+        "bin_size": bin_size,
         "smooth": smooth,
     }
 
@@ -772,12 +780,6 @@ def hdr(z_centres, z_density, mass=0.95):
     groups = [g for g in np.split(sel, gaps + 1)]
 
     intervals = [np.array([z_centres[g[0]], z_centres[g[-1]]]) for g in groups if len(g) > 0]
-    # intervals = []
-    # half = 0.5 * np.diff(z_centres).mean()       # assume uniform spacing
-    # for g in groups:
-    #     z_lo = z_centres[g[0]] - half
-    #     z_hi = z_centres[g[-1]] + half
-    #     intervals.append(np.array([z_lo, z_hi]))
     return intervals
 
 
@@ -952,10 +954,10 @@ class Warper:
 
     def warp_skeleton(self, 
                 z_profile_extent: list[float] | None = None,
-                z_profile_nbins: int = 120,
+                z_profile_bin_size: float = 1, # um
                 z_profile_hdr_mass: float = 0.95,
                 xy_profile_extents: list[float] | None = None,
-                xy_profile_nbins: int = 20,
+                xy_profile_bin_size: float = 2, # um
                 xy_profile_smooth: float = 1.,
                 skeleton_nodes_scale: float = 1.0,
                 voxel_resolution: list[float] | None = None, 
@@ -975,10 +977,10 @@ class Warper:
             voxel_resolution=voxel_resolution,
             conformal_jump=conformal_jump,
             z_profile_extent=z_profile_extent,
-            z_profile_nbins=z_profile_nbins,
+            z_profile_bin_size=z_profile_bin_size,
             z_profile_hdr_mass=z_profile_hdr_mass,
             xy_profile_extents=xy_profile_extents,
-            xy_profile_nbins=xy_profile_nbins,
+            xy_profile_bin_size=xy_profile_bin_size,
             xy_profile_smooth=xy_profile_smooth,
             backward_compatible=backward_compatible,
             skeleton_nodes_scale=skeleton_nodes_scale,
@@ -991,10 +993,10 @@ class Warper:
         on_sac_pos: float = 0.0,
         off_sac_pos: float = 12.0,
         z_profile_extent: list[float] | None = None, # [z_min, z_max]
-        z_profile_nbins: int | None = None,
+        z_profile_bin_size: int | None = None,
         z_profile_hdr_mass: float | None = None,
         xy_profile_extents: list[float] | None = None, # [x_min, x_max, y_min, y_max]
-        xy_profile_nbins: int | None = None,
+        xy_profile_bin_size: int | None = None,
         xy_profile_smooth: float | None = None,
     ) -> Skeleton:
         """Renormalize the warped skeleton to the desired ON/OFF SAC positions."""
@@ -1023,14 +1025,14 @@ class Warper:
 
         z_profile = get_z_profile(
             skel_renormed, 
-            extents=z_profile_extent if z_profile_extent is not None else self.warped_skeleton.extra["z_profile"]["extents"],
-            nbins=z_profile_nbins if z_profile_nbins is not None else self.warped_skeleton.extra["z_profile"]["nbins"],
+            extent=z_profile_extent if z_profile_extent is not None else self.warped_skeleton.extra["z_profile"]["extent"],
+            bin_size=z_profile_bin_size if z_profile_bin_size is not None else self.warped_skeleton.extra["z_profile"]["bin_size"],
             hdr_mass=z_profile_hdr_mass if z_profile_hdr_mass is not None else self.warped_skeleton.extra["z_profile"]["hdr_mass"],
         )
         xy_profile = get_xy_profile(
             skel_renormed, 
             extents=xy_profile_extents if xy_profile_extents is not None else self.warped_skeleton.extra["xy_profile"]["extents"],
-            nbins=xy_profile_nbins if xy_profile_nbins is not None else self.warped_skeleton.extra["xy_profile"]["nbins"],
+            bin_size=xy_profile_bin_size if xy_profile_bin_size is not None else self.warped_skeleton.extra["xy_profile"]["bin_size"],
             smooth=xy_profile_smooth if xy_profile_smooth is not None else self.warped_skeleton.extra["xy_profile"]["smooth"],
         ) 
 
