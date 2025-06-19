@@ -34,7 +34,7 @@ import time
 from copy import deepcopy
 from importlib import metadata as _metadata
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 import skeliner as sk
@@ -305,14 +305,14 @@ def normalize_nodes(
 def warp_skeleton(
     skel: Skeleton,
     surface_mapping: dict,
-    voxel_resolution: Union[float, list] = [1., 1., 1.],
+    voxel_resolution: float | list[float | int] = [1., 1., 1.],
     on_sac_pos: float = 0.0,
     off_sac_pos: float = 12.0,
-    z_profile_extent: list[float] | None = None, # [z_min, z_max]
-    z_profile_bin_size: float = 1.,
-    z_profile_hdr_mass: float = 0.95,
-    xy_profile_extents: list[float] | None = None, # [x_min, x_max, y_min, y_max]
-    xy_profile_bin_size: float = 20.,
+    z_profile_extent: list[float | int] | None = None, # [z_min, z_max]
+    z_profile_bin_size: float | int = 1.,
+    z_profile_hdr_mass: float | int = 0.95,
+    xy_profile_extents: list[float | int] | None = None, # [x_min, x_max, y_min, y_max]
+    xy_profile_bin_size: float | int = 20.,
     xy_profile_smooth: float = 1.0,
     skeleton_nodes_scale: float = 1.0,
     conformal_jump: int | None = None,
@@ -593,7 +593,7 @@ def gridder1d(
 
 def get_z_profile(
     skel: Skeleton,
-    extent: list[float] | None = None,
+    extent: list[float | int] | None = None,
     bin_size: float = 1, # µm
     hdr_mass: float = 0.95,
 ) -> dict:
@@ -608,7 +608,7 @@ def get_z_profile(
             'edges'   – (E, 2) SWC child/parent pairs (1-based),
             'medVZmin', 'medVZmax'  – median of the ON and OFF SAC surfaces.
     extent
-        Two floats ``[z_min, z_max]`` that define *one* common physical
+        Two floats or ints ``[z_min, z_max]`` that define *one* common physical
         span (µm) for **all** cells *after* the ON/OFF anchoring.
         •  Default ``None`` means “just enough to cover the deepest /
            shallowest point of *this* cell” (original behaviour).  
@@ -685,7 +685,7 @@ def _edges_from_bin_size(lo: float, hi: float, bin_size: float) -> np.ndarray:
 
 def get_xy_profile(
     skel: Skeleton,
-    extents: Optional[list[float]] = None,
+    extents: list[float | int] | None = None,
     bin_size: float = 2.0,       
     smooth: float = 1.0,
 ) -> dict:
@@ -953,14 +953,14 @@ class Warper:
         return self
 
     def warp_skeleton(self, 
-                z_profile_extent: list[float] | None = None,
-                z_profile_bin_size: float = 1, # um
-                z_profile_hdr_mass: float = 0.95,
-                xy_profile_extents: list[float] | None = None,
-                xy_profile_bin_size: float = 20, # um
-                xy_profile_smooth: float = 1.,
+                z_profile_extent: list[float | int] | None = None,
+                z_profile_bin_size: float | int = 1, # um
+                z_profile_hdr_mass: float | int = 0.95,
+                xy_profile_extents: list[float | int] | None = None,
+                xy_profile_bin_size: float | int = 20, # um
+                xy_profile_smooth: float | int = 1.,
                 skeleton_nodes_scale: float = 1.0,
-                voxel_resolution: list[float] | None = None, 
+                voxel_resolution: list[float | int] | None = None, 
                 conformal_jump: int | None = None,
                 backward_compatible: bool = False,
     ) -> "Warper":
@@ -992,12 +992,12 @@ class Warper:
     def renormalize(self, 
         on_sac_pos: float = 0.0,
         off_sac_pos: float = 12.0,
-        z_profile_extent: list[float] | None = None, # [z_min, z_max]
-        z_profile_bin_size: int | None = None,
-        z_profile_hdr_mass: float | None = None,
-        xy_profile_extents: list[float] | None = None, # [x_min, x_max, y_min, y_max]
-        xy_profile_bin_size: int | None = None,
-        xy_profile_smooth: float | None = None,
+        z_profile_extent: list[float | int] | None = None, # [z_min, z_max]
+        z_profile_bin_size: float | int | None = None,
+        z_profile_hdr_mass: float | int | None = None,
+        xy_profile_extents: list[float | int] | None = None, # [x_min, x_max, y_min, y_max]
+        xy_profile_bin_size: float | int | None = None,
+        xy_profile_smooth: float | int | None = None,
     ) -> Skeleton:
         """Renormalize the warped skeleton to the desired ON/OFF SAC positions."""
         if self.warped_skeleton is None:
