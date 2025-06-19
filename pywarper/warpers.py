@@ -686,8 +686,8 @@ def _edges_from_bin_size(lo: float, hi: float, bin_size: float) -> np.ndarray:
 def get_xy_profile(
     skel: Skeleton,
     extents: list[float | int] | None = None,
-    bin_size: float = 2.0,       
-    smooth: float = 1.0,
+    bin_size: float | int = 2.0,
+    smooth: float | int = 1.0,
 ) -> dict:
     """
     Planar (x-y) dendritic-length density on a **square** grid.
@@ -717,6 +717,12 @@ def get_xy_profile(
         y_all = np.concatenate((mid[:, 1], skel.nodes[:, 1]))
         xmin, xmax = x_all.min(), x_all.max()
         ymin, ymax = y_all.min(), y_all.max()
+
+        xmin = np.floor(xmin / bin_size) * bin_size
+        xmax = np.ceil (xmax / bin_size) * bin_size
+        ymin = np.floor(ymin / bin_size) * bin_size
+        ymax = np.ceil (ymax / bin_size) * bin_size
+        
     else:
         xmin, xmax, ymin, ymax = extents
 
