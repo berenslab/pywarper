@@ -336,11 +336,14 @@ def warp_skeleton(
     z_profile_extent: list[float | int] | None = None,  # [z_min, z_max]
     z_profile_bin_size: float | int = 1.0,
     z_profile_hdr_mass: float | int = 0.95,
-    z_profile_measure: str = "length",  # ["length","area","volume"]
     z_profile_include_soma: bool = False,
+    z_profile_voxel_size: float | None = None,
     xy_profile_extents: list[float | int] | None = None,  # [x_min, x_max, y_min, y_max]
     xy_profile_bin_size: float | int = 20.0,
     xy_profile_smooth: float = 1.0,
+    xy_profile_include_soma: bool = False,
+    xy_profile_voxel_size: float | None = None,
+    radius_metric: str | None = None,
     skeleton_nodes_scale: float = 1.0,
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
@@ -443,28 +446,40 @@ def warp_skeleton(
         meta=skel.meta.copy(),
     )
 
-    z_profile = get_z_profile(
-        skel_norm,
-        extent=z_profile_extent,
-        bin_size=z_profile_bin_size,
-        hdr_mass=z_profile_hdr_mass,
-        measure=z_profile_measure,
-        include_soma=z_profile_include_soma,
-    )
-    xy_profile = get_xy_profile(
-        skel_norm,
-        extents=xy_profile_extents,
-        bin_size=xy_profile_bin_size,
-        smooth=xy_profile_smooth,
-    )
+    z_profiles = {
+        measure: get_z_profile(
+            skel_norm,
+            extent=z_profile_extent,
+            bin_size=z_profile_bin_size,
+            hdr_mass=z_profile_hdr_mass,
+            measure=measure,
+            include_soma=z_profile_include_soma,
+            voxel_size=z_profile_voxel_size,
+            radius_metric=radius_metric,
+        )
+        for measure in ["length", "volume"]
+    }
+    xy_profiles = {
+        measure: get_xy_profile(
+            skel_norm,
+            extents=xy_profile_extents,
+            bin_size=xy_profile_bin_size,
+            smooth=xy_profile_smooth,
+            measure="length",
+            include_soma=xy_profile_include_soma,
+            voxel_size=xy_profile_voxel_size,
+            radius_metric=radius_metric,
+        )
+        for measure in ["length", "volume"]
+    }
 
     skel_norm.extra = {
         "prenormed_nodes": warped_nodes
         * voxel_resolution,  # keep the pre-normed warped nodes for future use
         "med_z_on": float(med_z_on),
         "med_z_off": float(med_z_off),
-        "z_profile": z_profile,
-        "xy_profile": xy_profile,
+        "z_profiles": z_profiles,
+        "xy_profiles": xy_profiles,
     }
     skel_norm.meta.update(
         {
@@ -868,6 +883,8 @@ def get_z_profile(
         "measure": measure,
         "y_units": unit if measure == "length" else f"{unit}³",
         "include_soma": include_soma,
+        "voxel_size": voxel_size,
+        "radius_metric": radius_metric,
     }
 
 
@@ -971,6 +988,8 @@ def get_xy_profile(
         "measure": measure,
         "units": units,
         "include_soma": include_soma,
+        "voxel_size": voxel_size,
+        "radius_metric": radius_metric,
     }
 
 
@@ -1204,14 +1223,19 @@ class Warper:
 
     def warp_skeleton(
         self,
+        on_sac_pos: float = 0.0,
+        off_sac_pos: float = 12.0,
         z_profile_extent: list[float | int] | None = None,
         z_profile_bin_size: float | int = 1,  # um
         z_profile_hdr_mass: float | int = 0.95,
-        z_profile_measure: str = "length",  # ["length","area","volume"]
         z_profile_include_soma: bool = False,
+        z_profile_voxel_size: float | None = None,
         xy_profile_extents: list[float | int] | None = None,
         xy_profile_bin_size: float | int = 20,  # um
         xy_profile_smooth: float | int = 1.0,
+        xy_profile_include_soma: bool = False,
+        xy_profile_voxel_size: float | None = None,
+        radius_metric: str | None = None,
         skeleton_nodes_scale: float = 1.0,
         voxel_resolution: list[float | int] | None = None,
         conformal_jump: int | None = None,
@@ -1227,16 +1251,21 @@ class Warper:
         self.warped_skeleton = warp_skeleton(
             self.skeleton,
             self.mapping,
+            on_sac_pos=on_sac_pos,
+            off_sac_pos=off_sac_pos,
             voxel_resolution=voxel_resolution,
             conformal_jump=conformal_jump,
             z_profile_extent=z_profile_extent,
             z_profile_bin_size=z_profile_bin_size,
             z_profile_hdr_mass=z_profile_hdr_mass,
-            z_profile_measure=z_profile_measure,
             z_profile_include_soma=z_profile_include_soma,
+            z_profile_voxel_size=z_profile_voxel_size,
             xy_profile_extents=xy_profile_extents,
             xy_profile_bin_size=xy_profile_bin_size,
             xy_profile_smooth=xy_profile_smooth,
+            xy_profile_include_soma=xy_profile_include_soma,
+            xy_profile_voxel_size=xy_profile_voxel_size,
+            radius_metric=radius_metric,
             backward_compatible=backward_compatible,
             skeleton_nodes_scale=skeleton_nodes_scale,
             verbose=self.verbose,
@@ -1250,10 +1279,15 @@ class Warper:
         z_profile_extent: list[float | int] | None = None,  # [z_min, z_max]
         z_profile_bin_size: float | int | None = None,
         z_profile_hdr_mass: float | int | None = None,
+        z_profile_include_soma: bool | None = None,
+        z_profile_voxel_size: float | None = None,
         xy_profile_extents: list[float | int]
         | None = None,  # [x_min, x_max, y_min, y_max]
         xy_profile_bin_size: float | int | None = None,
         xy_profile_smooth: float | int | None = None,
+        xy_profile_include_soma: bool | None = None,
+        xy_profile_voxel_size: float | None = None,
+        radius_metric: str | None = None,
     ) -> Skeleton:
         """Renormalize the warped skeleton to the desired ON/OFF SAC positions."""
         if self.warped_skeleton is None:
@@ -1279,30 +1313,57 @@ class Warper:
             meta=self.warped_skeleton.meta.copy(),  # copy metadata
         )
 
-        z_profile = get_z_profile(
-            skel_renormed,
-            extent=z_profile_extent
-            if z_profile_extent is not None
-            else self.warped_skeleton.extra["z_profile"]["extent"],
-            bin_size=z_profile_bin_size
-            if z_profile_bin_size is not None
-            else self.warped_skeleton.extra["z_profile"]["bin_size"],
-            hdr_mass=z_profile_hdr_mass
-            if z_profile_hdr_mass is not None
-            else self.warped_skeleton.extra["z_profile"]["hdr_mass"],
-        )
-        xy_profile = get_xy_profile(
-            skel_renormed,
-            extents=xy_profile_extents
-            if xy_profile_extents is not None
-            else self.warped_skeleton.extra["xy_profile"]["extents"],
-            bin_size=xy_profile_bin_size
-            if xy_profile_bin_size is not None
-            else self.warped_skeleton.extra["xy_profile"]["bin_size"],
-            smooth=xy_profile_smooth
-            if xy_profile_smooth is not None
-            else self.warped_skeleton.extra["xy_profile"]["smooth"],
-        )
+        z_profiles = {
+            measure: get_z_profile(
+                skel_renormed,
+                extent=z_profile_extent
+                if z_profile_extent is not None
+                else self.warped_skeleton.extra["z_profiles"][measure]["extent"],
+                bin_size=z_profile_bin_size
+                if z_profile_bin_size is not None
+                else self.warped_skeleton.extra["z_profiles"][measure]["bin_size"],
+                hdr_mass=z_profile_hdr_mass
+                if z_profile_hdr_mass is not None
+                else self.warped_skeleton.extra["z_profiles"][measure]["hdr_mass"],
+                measure=measure,
+                include_soma=z_profile_include_soma
+                if z_profile_include_soma is not None
+                else self.warped_skeleton.extra["z_profiles"][measure]["include_soma"],
+                voxel_size=z_profile_voxel_size
+                if z_profile_voxel_size is not None
+                else self.warped_skeleton.extra["z_profiles"][measure]["voxel_size"],
+                radius_metric=radius_metric
+                if radius_metric is not None
+                else self.warped_skeleton.extra["z_profiles"][measure]["radius_metric"],
+            )
+            for measure in ["length", "volume"]
+        }
+        xy_profiles = {
+            measure: get_xy_profile(
+                skel_renormed,
+                extents=xy_profile_extents
+                if xy_profile_extents is not None
+                else self.warped_skeleton.extra["xy_profiles"][measure]["extents"],
+                bin_size=xy_profile_bin_size
+                if xy_profile_bin_size is not None
+                else self.warped_skeleton.extra["xy_profiles"][measure]["bin_size"],
+                smooth=xy_profile_smooth
+                if xy_profile_smooth is not None
+                else self.warped_skeleton.extra["xy_profiles"][measure]["smooth"],
+                include_soma=xy_profile_include_soma
+                if xy_profile_include_soma is not None
+                else self.warped_skeleton.extra["xy_profiles"][measure]["include_soma"],
+                voxel_size=xy_profile_voxel_size
+                if xy_profile_voxel_size is not None
+                else self.warped_skeleton.extra["xy_profiles"][measure]["voxel_size"],
+                radius_metric=radius_metric
+                if radius_metric is not None
+                else self.warped_skeleton.extra["xy_profiles"][measure][
+                    "radius_metric"
+                ],
+            )
+            for measure in ["length", "volume"]
+        }
 
         skel_renormed.extra = {
             "prenormed_nodes": self.warped_skeleton.extra[
@@ -1310,8 +1371,8 @@ class Warper:
             ],  # keep the pre-normed warped nodes for future use
             "med_z_on": float(self.warped_skeleton.extra["med_z_on"]),
             "med_z_off": float(self.warped_skeleton.extra["med_z_off"]),
-            "z_profile": z_profile,
-            "xy_profile": xy_profile,
+            "z_profiles": z_profiles,
+            "xy_profiles": xy_profiles,
         }
         skel_renormed.meta.update(
             {
