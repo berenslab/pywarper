@@ -539,7 +539,7 @@ def warp_mesh(
 
 
 # =====================================================================
-# helpers for get_z_profile()
+# helpers for get_z_profile() and get_xy_profile()
 # =====================================================================
 
 
@@ -571,7 +571,7 @@ def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
     return lengths, mid
 
 
-def segment_volumes(
+def z_slince_volumes(
     skel: Skeleton,
     *,
     voxel_size: float | None = None,
@@ -579,11 +579,7 @@ def segment_volumes(
     radius_metric: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Union‑correct *per‑z slice* volumes as weights + sample positions.
-
-    This mirrors `segment_lengths()` in return shape, but the notion of a
-    “segment” here is a **z‑slice of the union** (frusta + optional soma),
-    not an edge.
+    Union-correct **per-z slice** volumes as weights + sample positions.
 
     Returns
     -------
@@ -592,13 +588,6 @@ def segment_volumes(
     mid     : (K, 3) float
         Sample positions for each slice: (x̄, ȳ, z_center), where x̄,ȳ are
         slice area‑weighted centroids and z_center is the slice center.
-
-    Notes
-    -----
-    * Uses `dx._voxelize_union` once; no double counting at branch junctions
-      or soma contacts.
-    * If you don't care about x̄,ȳ, you can replace them with zeros to save
-      a tiny bit of compute; z‑profiles only use `mid[:,2]`.
     """
     # choose radii column for voxelizer / bbox
     if radius_metric is None:
@@ -649,6 +638,68 @@ def segment_volumes(
         ybar = np.where(counts > 0, sum_y / counts, (lo[1] + hi[1]) / 2.0)
 
     mid = np.column_stack((xbar, ybar, zc)).astype(np.float64)
+    return vol, mid
+
+
+def xy_column_volume(
+    skel: Skeleton,
+    *,
+    voxel_size: float | None = None,
+    include_soma: bool = False,
+    radius_metric: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Union-correct **per-(x,y) column** volumes + sample positions.
+
+    Returns
+    -------
+    vol : (K,) float
+        Volume in each non-empty (x,y) column (integrated over z), unit³.
+    mid : (K,3) float
+        (x_center, y_center, z̄) for that column, where z̄ is the z-centroid
+        of occupied voxels in the column (handy but not used by XY maps).
+    """
+    if radius_metric is None:
+        radius_metric = skel.recommend_radius()[0]
+    radii = np.asarray(skel.radii[radius_metric], dtype=np.float64).reshape(-1)
+
+    lo_nodes = (skel.nodes - radii[:, None]).min(axis=0)
+    hi_nodes = (skel.nodes + radii[:, None]).max(axis=0)
+    if include_soma and getattr(skel, "soma", None) is not None:
+        slo, shi = _ellipsoid_aabb(skel.soma)
+        lo = np.minimum(lo_nodes, slo)
+        hi = np.maximum(hi_nodes, shi)
+    else:
+        lo, hi = lo_nodes, hi_nodes
+
+    occ, h, (nx, ny, nz), lo, hi = _voxelize_union(
+        skel, radii, lo, hi, voxel_size=voxel_size, include_soma=include_soma
+    )
+    if nx == 0 or ny == 0:
+        return np.zeros(0), np.zeros((0, 3))
+
+    # volume per (x,y) column
+    vol_xy = occ.sum(axis=2).astype(np.float64) * (h**3)  # (nx, ny)
+    mask = vol_xy > 0.0
+    if not mask.any():
+        return np.zeros(0), np.zeros((0, 3))
+
+    # centers
+    xs = lo[0] + (np.arange(nx) + 0.5) * h
+    ys = lo[1] + (np.arange(ny) + 0.5) * h
+    Xc, Yc = np.meshgrid(xs, ys, indexing="ij")
+
+    # z centroid per column (nice to have)
+    zc = lo[2] + (np.arange(nz) + 0.5) * h  # (nz,)
+    occ_flat = occ.reshape(nx * ny, nz).astype(np.float64)
+    counts = occ_flat.sum(axis=1)  # (#columns,)
+    sum_z = occ_flat @ zc  # (#columns,)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        zbar = np.where(counts > 0, sum_z / counts, (lo[2] + hi[2]) / 2.0)
+    zbar = zbar.reshape(nx, ny)
+
+    vol = vol_xy[mask]
+    mid = np.column_stack((Xc[mask], Yc[mask], zbar[mask])).astype(np.float64)
     return vol, mid
 
 
@@ -765,7 +816,7 @@ def get_z_profile(
     if measure == "length":
         density, nodes = segment_lengths(skel)
     elif measure == "volume":
-        density, nodes = segment_volumes(
+        density, nodes = z_slince_volumes(
             skel,
             voxel_size=voxel_size,
             include_soma=include_soma,
@@ -835,6 +886,11 @@ def get_xy_profile(
     extents: list[float | int] | None = None,
     bin_size: float | int = 2.0,
     smooth: float | int = 1.0,
+    *,
+    measure: str = "length",  # {"length","volume"}
+    radius_metric: str | None = None,
+    voxel_size: float | None = None,
+    include_soma: bool = False,
 ) -> dict:
     """
     Planar (x-y) dendritic-length density on a **square** grid.
@@ -849,6 +905,10 @@ def get_xy_profile(
         exactly `bin_size` wide.  (This guarantees comparability.)
     smooth
         σ of the Gaussian kernel (bins) applied to the histogram.
+    measure:
+        "length" – dendritic cable length per bin (histogram → Gaussian smooth).
+        "volume" – **union-correct** morphology volume per bin (voxel union),
+                   integrated along z, then binned in x-y.
 
     Returns
     -------
@@ -856,7 +916,19 @@ def get_xy_profile(
            ``histogram`` (raw), ``extents``, ``bin_size``, ``nbins`` …
     """
 
-    density, mid = segment_lengths(skel)
+    if measure == "length":
+        density, mid = segment_lengths(skel)
+        units = skel.meta.get("unit", "µm")
+    elif measure == "volume":
+        density, mid = xy_column_volume(
+            skel,
+            voxel_size=voxel_size,
+            include_soma=include_soma,
+            radius_metric=radius_metric,
+        )
+        units = f"{skel.meta.get('unit', 'µm')}³"
+    else:
+        raise ValueError("measure must be one of {'length','volume'}")
 
     # 0) bounding box ----------------------------------------------------------
     if extents is None:
@@ -896,6 +968,9 @@ def get_xy_profile(
         "n_bins": (len(x), len(y)),  # may differ if dx ≠ dy
         "bin_size": bin_size,
         "smooth": smooth,
+        "measure": measure,
+        "units": units,
+        "include_soma": include_soma,
     }
 
 
