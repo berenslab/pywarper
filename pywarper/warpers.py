@@ -571,22 +571,41 @@ def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
     return lengths, mid
 
 
-def _z_profile_volume_union(
+def segment_volumes(
     skel: Skeleton,
-    extent: list[float | int] | None,
-    bin_size: float,
     *,
-    voxel_size: float | None,
-    include_soma: bool,
-    hdr_mass: float,
-) -> dict:
-    """Union-correct z-profile of **volume** via dx._voxelize_union (no double-counting)."""
-    # tight bbox from cable radii; expand with soma AABB only if requested
-    # (mirrors dx.volume/area defaults)
-    # pick a radii metric automatically (only used for bbox & frusta voxelization)
-    radius_metric = skel.recommend_radius()[0]
+    voxel_size: float | None = None,
+    include_soma: bool = False,
+    radius_metric: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Union‑correct *per‑z slice* volumes as weights + sample positions.
+
+    This mirrors `segment_lengths()` in return shape, but the notion of a
+    “segment” here is a **z‑slice of the union** (frusta + optional soma),
+    not an edge.
+
+    Returns
+    -------
+    volumes : (K,) float
+        Union volume per *non‑empty* z‑slice (in unit³).
+    mid     : (K, 3) float
+        Sample positions for each slice: (x̄, ȳ, z_center), where x̄,ȳ are
+        slice area‑weighted centroids and z_center is the slice center.
+
+    Notes
+    -----
+    * Uses `dx._voxelize_union` once; no double counting at branch junctions
+      or soma contacts.
+    * If you don't care about x̄,ȳ, you can replace them with zeros to save
+      a tiny bit of compute; z‑profiles only use `mid[:,2]`.
+    """
+    # choose radii column for voxelizer / bbox
+    if radius_metric is None:
+        radius_metric = skel.recommend_radius()[0]
     radii = np.asarray(skel.radii[radius_metric], dtype=np.float64).reshape(-1)
 
+    # tight auto‑bbox (like dx.volume/area)
     lo_nodes = (skel.nodes - radii[:, None]).min(axis=0)
     hi_nodes = (skel.nodes + radii[:, None]).max(axis=0)
     if include_soma and getattr(skel, "soma", None) is not None:
@@ -596,75 +615,41 @@ def _z_profile_volume_union(
     else:
         lo, hi = lo_nodes, hi_nodes
 
-    # single union voxelization
+    # one voxelization of the union
     occ, h, (nx, ny, nz), lo, hi = _voxelize_union(
         skel, radii, lo, hi, voxel_size=voxel_size, include_soma=include_soma
     )
-    unit = skel.meta.get("unit", "µm")
-
     if nz == 0:
-        return {
-            "x": np.array([]),
-            "distribution": np.array([]),
-            "histogram": np.array([]),
-            "extent": [0, 0],
-            "n_bins": 0,
-            "bin_size": bin_size,
-            "hdr": [],
-            "hdr_mass": hdr_mass,
-            "measure": "volume",
-            "y_units": f"{unit}³",
-            "voxel_size": h,
-            "grid_shape": (nx, ny, nz),
-            "include_soma": include_soma,
-        }
+        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
 
-    z_centres = lo[2] + (np.arange(nz) + 0.5) * h  # slice centers
-    # per-slice volume (occupied voxels × voxel volume)
-    w = occ.sum(axis=(0, 1)).astype(np.float64) * (h**3)  # (nz,)
+    # volume per slice (occupied count × voxel volume)
+    vol_all = occ.sum(axis=(0, 1)).astype(np.float64) * (h**3)  # (nz,)
 
-    # window
-    if extent is None:
-        z_min, z_max = float(z_centres.min()), float(z_centres.max())
-    else:
-        z_min, z_max = extent
+    # keep only non‑empty slices
+    mask = vol_all > 0.0
+    if not mask.any():
+        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
+    vol = vol_all[mask]
+    k = np.where(mask)[0]  # slice indices kept
 
-    # histogram bins
-    n_bins = int(np.ceil((z_max - z_min) / bin_size))
-    edges = z_min + np.arange(n_bins + 1) * bin_size
-    edges[-1] = z_max
+    # z center for each kept slice
+    zc = lo[2] + (k + 0.5) * h
 
-    z_hist, _ = np.histogram(z_centres, bins=edges, weights=w)
-    tot = w.sum()
-    if z_hist.sum() > 0:
-        z_hist *= tot / z_hist.sum()
+    # area‑weighted centroids per kept slice (optional but nice to have)
+    xs = lo[0] + (np.arange(nx) + 0.5) * h  # (nx,)
+    ys = lo[1] + (np.arange(ny) + 0.5) * h  # (ny,)
+    occ_sel = occ[:, :, mask]  # (nx, ny, K)
 
-    # KB-smoothed density (mass-preserving)
-    centre = (z_min + z_max) / 2.0
-    halfspan = (z_max - z_min) / 2.0
-    z_samples = (z_centres - centre) / max(halfspan, np.finfo(float).eps)
-    z_dist = gridder1d(z_samples / 2.0, w, n_bins)
-    if z_dist.sum() > 0:
-        z_dist *= tot / z_dist.sum()
+    counts = occ_sel.sum(axis=(0, 1)).astype(np.float64)  # (K,)
+    sum_x = (occ_sel * xs[:, None, None]).sum(axis=(0, 1))  # (K,)
+    sum_y = (occ_sel * ys[None, :, None]).sum(axis=(0, 1))  # (K,)
 
-    x_um = 0.5 * (edges[1:] + edges[:-1])
-    intervals = hdr(x_um, z_dist, mass=hdr_mass)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        xbar = np.where(counts > 0, sum_x / counts, (lo[0] + hi[0]) / 2.0)
+        ybar = np.where(counts > 0, sum_y / counts, (lo[1] + hi[1]) / 2.0)
 
-    return {
-        "x": x_um,
-        "distribution": z_dist,
-        "histogram": z_hist,
-        "extent": [z_min, z_max],
-        "n_bins": n_bins,
-        "bin_size": bin_size,
-        "hdr": intervals,
-        "hdr_mass": hdr_mass,
-        "measure": "volume",
-        "y_units": f"{unit}³",
-        "voxel_size": h,
-        "grid_shape": (nx, ny, nz),
-        "include_soma": include_soma,
-    }
+    mid = np.column_stack((xbar, ybar, zc)).astype(np.float64)
+    return vol, mid
 
 
 def gridder1d(
@@ -756,8 +741,9 @@ def get_z_profile(
     bin_size: float = 1,  # µm
     hdr_mass: float = 0.95,
     *,
-    measure: str = "length",  # ["length", "area", "volume"]
-    voxel_size: float | None = None,  # only used for area/volume (union)
+    measure: str = "length",  # ["length", "volume"]
+    radius_metric: str | None = None,
+    voxel_size: float | None = None,  # only used for volume (union)
     include_soma: bool = False,
 ) -> dict:
     """
@@ -765,73 +751,73 @@ def get_z_profile(
 
     measure:
         "length" – cable length per bin (histogram + KB‑smoothed).
-        "area"   – **union‑correct** membrane surface area per bin (voxel union).
         "volume" – **union‑correct** morphology volume per bin (voxel union).
 
     Notes
     -----
-    * Area/volume use a single voxelization (dx._voxelize_union) and
+    * volume uses a single voxelization (dx._voxelize_union) and
       **do not double count** at branch junctions or soma contacts.
     * 'include_soma' defaults to False to match the 'length' convention
       (edges only). Set True if you want soma membrane/volume included.
     * For stable plots, keep bin_size ≥ voxel_size (if you set voxel_size).
     """
+
     if measure == "length":
         density, nodes = segment_lengths(skel)
-        z_vals = nodes[:, 2]
-
-        # window
-        if extent is None:
-            z_min, z_max = np.floor(z_vals.min()), np.ceil(z_vals.max())
-        else:
-            z_min, z_max = extent
-
-        # histogram bins
-        n_bins = int(np.ceil((z_max - z_min) / bin_size))
-        edges = z_min + np.arange(n_bins + 1) * bin_size
-        edges[-1] = z_max
-
-        # histogram (mass-preserving)
-        z_hist, _ = np.histogram(z_vals, bins=edges, weights=density)
-        if z_hist.sum() > 0:
-            z_hist *= density.sum() / z_hist.sum()
-
-        # Kaiser–Bessel gridding (centre to [-1,1], then /2 → [-0.5,0.5])
-        centre = (z_min + z_max) / 2.0
-        halfspan = (z_max - z_min) / 2.0
-        z_samples = (z_vals - centre) / max(halfspan, np.finfo(float).eps)
-        z_dist = gridder1d(z_samples / 2.0, density, n_bins)
-        if z_dist.sum() > 0:
-            z_dist *= density.sum() / z_dist.sum()
-
-        x_um = 0.5 * (edges[1:] + edges[:-1])
-        intervals = hdr(x_um, z_dist, mass=hdr_mass)
-        unit = skel.meta.get("unit", "µm")
-
-        return {
-            "x": x_um,
-            "distribution": z_dist,
-            "histogram": z_hist,
-            "extent": [z_min, z_max],
-            "n_bins": n_bins,
-            "bin_size": bin_size,
-            "hdr": intervals,
-            "hdr_mass": hdr_mass,
-            "measure": "length",
-            "y_units": unit,
-        }
-
-    if measure == "volume":
-        return _z_profile_volume_union(
+    elif measure == "volume":
+        density, nodes = segment_volumes(
             skel,
-            extent,
-            bin_size,
             voxel_size=voxel_size,
             include_soma=include_soma,
-            hdr_mass=hdr_mass,
+            radius_metric=radius_metric,
         )
+    else:
+        raise ValueError("measure must be one of {'length','volume'}")
 
-    raise ValueError("measure must be one of {'length','volume'}")
+    z_vals = nodes[:, 2]
+
+    # window
+    if extent is None:
+        z_min, z_max = np.floor(z_vals.min()), np.ceil(z_vals.max())
+    else:
+        z_min, z_max = extent
+
+    # histogram bins
+    n_bins = max(1, int(np.ceil((z_max - z_min) / bin_size)))
+    edges = z_min + np.arange(n_bins + 1) * bin_size
+    edges[-1] = z_max
+
+    # histogram (mass‑preserving)
+    z_hist, _ = np.histogram(z_vals, bins=edges, weights=density)
+    tot = density.sum()
+    if z_hist.sum() > 0:
+        z_hist *= tot / z_hist.sum()
+
+    # Kaiser–Bessel smoothing (same as length)
+    centre = (z_min + z_max) / 2.0
+    halfspan = (z_max - z_min) / 2.0
+    z_samples = (z_vals - centre) / max(halfspan, np.finfo(float).eps)
+    z_dist = gridder1d(z_samples / 2.0, density, n_bins)
+    if z_dist.sum() > 0:
+        z_dist *= tot / z_dist.sum()
+
+    x_um = 0.5 * (edges[1:] + edges[:-1])
+    intervals = hdr(x_um, z_dist, mass=hdr_mass)
+    unit = skel.meta.get("unit", "µm")
+
+    return {
+        "x": x_um,
+        "distribution": z_dist,
+        "histogram": z_hist,
+        "extent": [z_min, z_max],
+        "n_bins": n_bins,
+        "bin_size": bin_size,
+        "hdr": intervals,
+        "hdr_mass": hdr_mass,
+        "measure": measure,
+        "y_units": unit if measure == "length" else f"{unit}³",
+        "include_soma": include_soma,
+    }
 
 
 def _edges_from_bin_size(lo: float, hi: float, bin_size: float) -> np.ndarray:
