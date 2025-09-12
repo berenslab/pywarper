@@ -440,9 +440,11 @@ def warp_skeleton(
     skel_norm = Skeleton(
         soma=normalized_soma,
         nodes=normalized_nodes * voxel_resolution,
-        edges=skel.edges,  # same connectivity
-        radii=skel.radii,  # same radii dict
-        ntype=skel.ntype,  # same node types (if any)
+        edges=skel.edges,
+        radii=skel.radii,
+        ntype=skel.ntype,
+        node2verts=skel.node2verts,
+        vert2node=skel.vert2node,
         meta=skel.meta.copy(),
     )
 

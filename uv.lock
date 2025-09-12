@@ -1287,7 +1287,7 @@ wheels = [
 
 [[package]]
 name = "pywarper"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "alphashape" },
@@ -1323,7 +1323,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.4.15" },
     { name = "scipy", specifier = ">=1.15.0" },
-    { name = "skeliner", specifier = ">=0.1.14" },
+    { name = "skeliner", specifier = ">=0.2.0" },
     { name = "twine", marker = "extra == 'dev'" },
     { name = "watermark", specifier = ">=2.5.0" },
 ]
@@ -1685,7 +1685,7 @@ wheels = [
 
 [[package]]
 name = "skeliner"
-version = "0.1.14"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "igraph" },
@@ -1695,9 +1695,9 @@ dependencies = [
     { name = "scipy" },
     { name = "trimesh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/fe/fa/d16f27b1d839e1f0c562541685df420958a3ea9bd5e2bc74468bbb709162/skeliner-0.1.14.tar.gz", hash = "sha256:e9d803a327066be1d227c7b9b3bfbf14f9fa23201ddcc9abb8a081aaaa625b66", size = 11344674, upload-time = "2025-09-09T15:34:42.906Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/45/0e/16609e0fd1de022dc16c6ed420c9b777939e35796c81cf1536b41c5bc1b5/skeliner-0.2.0.tar.gz", hash = "sha256:f0908588714a88b3432ea93372f9e279bc7c2376306cd8c1b0783e3221b5113b", size = 11351118, upload-time = "2025-09-11T14:58:21.589Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c3/c3/6d9ecf8caa835c9254354e0c9dc75765de1d4149a6c5479aa4ca8895c3bc/skeliner-0.1.14-py3-none-any.whl", hash = "sha256:49bf03d0ccc121cc25358ea3b556296cf64a70e3d60c66b81afaf788cc728f54", size = 92221, upload-time = "2025-09-09T15:34:41.2Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/cb/2af2526d17f7f3a9f7c723caf5f4c51457aeb1f6b307f68b13338b6544df/skeliner-0.2.0-py3-none-any.whl", hash = "sha256:2fd3466073bd8fa4d4034e76c4421007463b1858311093f19b7bfa8d02c83a75", size = 97943, upload-time = "2025-09-11T14:58:18.431Z" },
 ]
 
 [[package]]
