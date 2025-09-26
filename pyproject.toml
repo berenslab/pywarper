@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pywarper"
 version = "0.2.3"
-description = "Conformal mapping-based warping of neuronal morphologies."
+description = "Conformal mapping-based warping of retinal morphologies."
 authors = []
 requires-python = ">=3.10.0"
 dependencies = [

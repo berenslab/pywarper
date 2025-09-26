@@ -1,6 +1,8 @@
 # pywarper
 
-`pywarper` is a Python package for conformal mapping-based warping of neuronal morphologies, based on the [MATLAB implementations](https://github.com/uygarsumbul/rgc) (Sümbül, et al. 2014). 
+[![PyPI version](https://badge.fury.io/py/pywarper.svg)](https://badge.fury.io/py/pywarper)
+
+`pywarper` is a Python package for conformal mapping-based warping of retinal morphologies, based on the [MATLAB implementations](https://github.com/uygarsumbul/rgc) (Sümbül, et al. 2014). 
 
 ![](.github/banner.png)
 
