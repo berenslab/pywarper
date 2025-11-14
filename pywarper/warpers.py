@@ -41,7 +41,8 @@ from numpy.linalg import lstsq
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
-from skeliner.core import Skeleton, _bfs_parents
+from skeliner._core import _bfs_parents
+from skeliner.dataclass import Skeleton
 from skeliner.dx import _ellipsoid_aabb, _voxelize_union
 
 from .surface import build_mapping, fit_sac_surface
