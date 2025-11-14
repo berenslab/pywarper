@@ -1659,7 +1659,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.4.15" },
     { name = "scipy", specifier = ">=1.15.0" },
-    { name = "skeliner", specifier = ">=0.2.1" },
+    { name = "skeliner", specifier = ">=0.2.3" },
     { name = "twine", marker = "extra == 'dev'" },
     { name = "watermark", specifier = ">=2.5.0" },
 ]
@@ -2098,7 +2098,7 @@ wheels = [
 
 [[package]]
 name = "skeliner"
-version = "0.2.2"
+version = "0.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "igraph" },
@@ -2110,9 +2110,9 @@ dependencies = [
     { name = "scipy", version = "1.16.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "trimesh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/29/4a/1b2e68e99f290feb5f7310aab9f0627eac4ffecbbd596f265395691e888a/skeliner-0.2.2.tar.gz", hash = "sha256:d77bb3ede4f7572c03b9bd776d5c4fae5047ce80b3427a426a48857c488f07ef", size = 11357272, upload-time = "2025-10-08T14:11:16.214Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/23/25/adf21a73130789d6373659fc207b271a5e61e5a2a5ac5168bcd5a47c9e84/skeliner-0.2.3.tar.gz", hash = "sha256:c578e995396fae8c91aa6785188c4ba5f2539d6b3bb91c584d6c17acd78ca489", size = 11507850, upload-time = "2025-11-14T13:49:20.272Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/39/38e8bfc7b3ab0cba140925cd7b7f5212dd058a8189d98921cad35e1504b8/skeliner-0.2.2-py3-none-any.whl", hash = "sha256:e85584fddc26a5b6637b3d214dc54bc3b9548ca7fbfff540162364b61ae66b95", size = 102700, upload-time = "2025-10-08T14:11:14.559Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/3b/59fd260c91040b56ea8e6d1f3826273654a6a2dcddf7168c08555e2ec4b7/skeliner-0.2.3-py3-none-any.whl", hash = "sha256:7de9fd7567932d1f6a050045b6307b6543365052f07570050ca70caf869b36e4", size = 107024, upload-time = "2025-11-14T13:49:18.902Z" },
 ]
 
 [[package]]
