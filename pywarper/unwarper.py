@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import numpy as np
+from scipy.optimize import least_squares
 
 from .utils import build_surface_correspondences, resolve_conformal_jump
-from .warpers import local_ls_registration
+from .warpers import (
+    _apply_local_ls_state,
+    _build_local_ls_state,
+    local_ls_registration,
+)
 
 
 def denormalize_nodes(
@@ -59,12 +64,18 @@ def unwarp_nodes(
     conformal_jump: int | None = None,
     prenormalized: bool = False,
     backward_compatible: bool = False,
+    method: str = "local_ls",
+    optimize_max_evals_per_point: int = 80,
+    optimize_convergence_tol: float = 1e-9,
+    optimize_bound_xy_to_map: bool = True,
 ) -> np.ndarray:
     """
-    Approximate inverse of `warp_nodes` for point coordinates.
+    Inverse of `warp_nodes` for point coordinates.
 
-    The inverse is computed with the same local least-squares model used by
-    forward warping, but with input/output correspondences swapped.
+    `method="local_ls"` uses the original approximate inverse by swapping
+    local LS correspondences.
+    `method="optimize"` refines per-point coordinates by minimizing forward
+    warp residuals, i.e. solving `warp_nodes(x) ~= target`.
     """
     points = np.asarray(nodes, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
@@ -90,11 +101,75 @@ def unwarp_nodes(
         )
     )
 
-    # Inverse pass: swap forward correspondences (flattened -> curved frame).
-    return local_ls_registration(
-        prenormed_nodes,
+    if method == "local_ls":
+        # Inverse pass: swap forward correspondences (flattened -> curved frame).
+        return local_ls_registration(
+            prenormed_nodes,
+            on_output_pts,
+            off_output_pts,
+            on_input_pts,
+            off_input_pts,
+        )
+
+    if method != "optimize":
+        raise ValueError("method must be one of {'local_ls', 'optimize'}")
+
+    if optimize_max_evals_per_point <= 0:
+        raise ValueError("optimize_max_evals_per_point must be a positive integer.")
+    if optimize_convergence_tol <= 0:
+        raise ValueError("optimize_convergence_tol must be a positive float.")
+
+    # Start from the fast approximate inverse and refine against the forward model.
+    inverse_state = _build_local_ls_state(
         on_output_pts,
         off_output_pts,
         on_input_pts,
         off_input_pts,
+        window=5.0,
+        max_order=2,
     )
+    initial = _apply_local_ls_state(prenormed_nodes, inverse_state, warn=False)
+
+    forward_state = _build_local_ls_state(
+        on_input_pts,
+        off_input_pts,
+        on_output_pts,
+        off_output_pts,
+        window=5.0,
+        max_order=2,
+    )
+
+    if optimize_bound_xy_to_map:
+        x_min = float(min(on_input_pts[:, 0].min(), off_input_pts[:, 0].min()))
+        x_max = float(max(on_input_pts[:, 0].max(), off_input_pts[:, 0].max()))
+        y_min = float(min(on_input_pts[:, 1].min(), off_input_pts[:, 1].min()))
+        y_max = float(max(on_input_pts[:, 1].max(), off_input_pts[:, 1].max()))
+        lower_bounds = np.array([x_min, y_min, -np.inf], dtype=float)
+        upper_bounds = np.array([x_max, y_max, np.inf], dtype=float)
+    else:
+        lower_bounds = np.array([-np.inf, -np.inf, -np.inf], dtype=float)
+        upper_bounds = np.array([np.inf, np.inf, np.inf], dtype=float)
+
+    recovered = np.empty_like(prenormed_nodes)
+    for i, target in enumerate(prenormed_nodes):
+        x0 = initial[i].astype(float, copy=True)
+        if optimize_bound_xy_to_map:
+            x0[:2] = np.clip(x0[:2], lower_bounds[:2], upper_bounds[:2])
+
+        def _residual(x: np.ndarray) -> np.ndarray:
+            warped = _apply_local_ls_state(x[None, :], forward_state, warn=False)[0]
+            return warped - target
+
+        sol = least_squares(
+            _residual,
+            x0=x0,
+            bounds=(lower_bounds, upper_bounds),
+            method="trf",
+            max_nfev=int(optimize_max_evals_per_point),
+            ftol=float(optimize_convergence_tol),
+            xtol=float(optimize_convergence_tol),
+            gtol=float(optimize_convergence_tol),
+        )
+        recovered[i] = sol.x
+
+    return recovered
