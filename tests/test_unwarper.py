@@ -104,21 +104,75 @@ def test_unwarp_nodes_roundtrip_with_identity_surface_mapping():
     recovered = unwarp_nodes(
         normalized,
         mapping,
+    )
+
+    assert np.allclose(recovered, nodes, rtol=1e-6, atol=1e-6)
+
+
+def test_unwarp_nodes_can_infer_median_depths_from_mapping():
+    rng = np.random.default_rng(3)
+    mapping = _identity_surface_mapping()
+
+    nodes = np.empty((80, 3), dtype=float)
+    nodes[:, 0] = rng.uniform(6.0, 18.0, size=80)
+    nodes[:, 1] = rng.uniform(6.0, 18.0, size=80)
+    nodes[:, 2] = rng.uniform(0.0, 10.0, size=80)
+
+    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    normalized = normalize_nodes(
+        warped,
         med_z_on=med_z_on,
         med_z_off=med_z_off,
         on_sac_pos=0.0,
         off_sac_pos=12.0,
     )
-    recovered_from_prenormed = unwarp_nodes(
-        warped,
+
+    # med_z_on / med_z_off omitted: inferred from surface_mapping.
+    recovered = unwarp_nodes(
+        normalized,
         mapping,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        prenormalized=True,
     )
 
     assert np.allclose(recovered, nodes, rtol=1e-6, atol=1e-6)
-    assert np.allclose(recovered_from_prenormed, nodes, rtol=1e-6, atol=1e-6)
+
+
+def test_unwarp_nodes_supports_custom_sac_positions():
+    rng = np.random.default_rng(4)
+    mapping = _identity_surface_mapping()
+
+    nodes = np.empty((120, 3), dtype=float)
+    nodes[:, 0] = rng.uniform(6.0, 18.0, size=120)
+    nodes[:, 1] = rng.uniform(6.0, 18.0, size=120)
+    nodes[:, 2] = rng.uniform(0.0, 10.0, size=120)
+
+    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    on_sac_pos, off_sac_pos = -3.0, 21.5
+    normalized = normalize_nodes(
+        warped,
+        med_z_on=med_z_on,
+        med_z_off=med_z_off,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+    )
+
+    recovered_local = unwarp_nodes(
+        normalized,
+        mapping,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+    )
+    recovered_opt = unwarp_nodes(
+        normalized,
+        mapping,
+        method="optimize",
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+        max_evals_per_point=60,
+        convergence_tol=1e-9,
+    )
+
+    assert np.allclose(recovered_local, nodes, rtol=1e-6, atol=1e-6)
+    assert np.allclose(recovered_opt, nodes, rtol=1e-6, atol=1e-6)
 
 
 def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
@@ -132,25 +186,25 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
     nodes[:, 2] = rng.uniform(-120.0, 180.0, size=80)
 
     warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    normalized = normalize_nodes(
+        warped,
+        med_z_on=med_z_on,
+        med_z_off=med_z_off,
+        on_sac_pos=0.0,
+        off_sac_pos=12.0,
+    )
 
     recovered_local = unwarp_nodes(
-        warped,
+        normalized,
         mapping,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        prenormalized=True,
-        method="local_ls",
     )
     recovered_opt = unwarp_nodes(
-        warped,
+        normalized,
         mapping,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        prenormalized=True,
         method="optimize",
-        optimize_max_evals_per_point=80,
-        optimize_convergence_tol=1e-9,
-        optimize_bound_xy_to_map=True,
+        max_evals_per_point=80,
+        convergence_tol=1e-9,
+        bound_xy_to_map=True,
     )
 
     local_err = np.linalg.norm(recovered_local - nodes, axis=1)
@@ -160,20 +214,40 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
     assert np.quantile(opt_err, 0.95) < 1e-6
 
     rewarped_opt, _, _ = warp_nodes(recovered_opt, mapping)
-    assert np.allclose(rewarped_opt, warped, rtol=1e-8, atol=1e-8)
+    renorm_opt = normalize_nodes(
+        rewarped_opt,
+        med_z_on=med_z_on,
+        med_z_off=med_z_off,
+        on_sac_pos=0.0,
+        off_sac_pos=12.0,
+    )
+    assert np.allclose(renorm_opt, normalized, rtol=1e-8, atol=1e-8)
 
 
-def test_unwarp_nodes_invalid_method_raises():
+def test_unwarp_nodes_optimize_invalid_params_raise():
     mapping = _identity_surface_mapping()
     nodes = np.array([[10.0, 10.0, 5.0]], dtype=float)
     warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    normalized = normalize_nodes(
+        warped,
+        med_z_on=med_z_on,
+        med_z_off=med_z_off,
+        on_sac_pos=0.0,
+        off_sac_pos=12.0,
+    )
 
-    with pytest.raises(ValueError, match="method"):
+    with pytest.raises(ValueError, match="max_evals_per_point"):
         unwarp_nodes(
-            warped,
+            normalized,
             mapping,
-            med_z_on=med_z_on,
-            med_z_off=med_z_off,
-            prenormalized=True,
-            method="unknown",
+            method="optimize",
+            max_evals_per_point=0,
+        )
+
+    with pytest.raises(ValueError, match="convergence_tol"):
+        unwarp_nodes(
+            normalized,
+            mapping,
+            method="optimize",
+            convergence_tol=0.0,
         )

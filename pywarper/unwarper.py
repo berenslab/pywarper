@@ -53,50 +53,69 @@ def denormalize_nodes(
     return denormalized_nodes
 
 
-def unwarp_nodes(
+def _prepare_unwarp_inputs(
     nodes: np.ndarray,
     surface_mapping: dict,
-    med_z_on: float,
-    med_z_off: float,
     *,
-    on_sac_pos: float = 0.0,
-    off_sac_pos: float = 12.0,
-    conformal_jump: int | None = None,
-    prenormalized: bool = False,
-    backward_compatible: bool = False,
-    method: str = "local_ls",
-    optimize_max_evals_per_point: int = 80,
-    optimize_convergence_tol: float = 1e-9,
-    optimize_bound_xy_to_map: bool = True,
-) -> np.ndarray:
-    """
-    Inverse of `warp_nodes` for point coordinates.
-
-    `method="local_ls"` uses the original approximate inverse by swapping
-    local LS correspondences.
-    `method="optimize"` refines per-point coordinates by minimizing forward
-    warp residuals, i.e. solving `warp_nodes(x) ~= target`.
-    """
+    on_sac_pos: float,
+    off_sac_pos: float,
+    conformal_jump: int | None,
+    backward_compatible: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     points = np.asarray(nodes, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("nodes must be an (N, 3) array.")
 
-    if prenormalized:
-        prenormed_nodes = points
-    else:
-        prenormed_nodes = denormalize_nodes(
-            points,
-            med_z_on=med_z_on,
-            med_z_off=med_z_off,
-            on_sac_pos=on_sac_pos,
-            off_sac_pos=off_sac_pos,
-        )
-
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    on_input_pts, off_input_pts, on_output_pts, off_output_pts, _, _ = (
+    on_input_pts, off_input_pts, on_output_pts, off_output_pts, map_med_z_on, map_med_z_off = (
         build_surface_correspondences(
             surface_mapping,
             conformal_jump=resolved_jump,
+            backward_compatible=backward_compatible,
+        )
+    )
+
+    prenormed_nodes = denormalize_nodes(
+        points,
+        med_z_on=map_med_z_on,
+        med_z_off=map_med_z_off,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+    )
+
+    return prenormed_nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
+
+
+def unwarp_nodes(
+    nodes: np.ndarray,
+    surface_mapping: dict,
+    *,
+    on_sac_pos: float = 0.0,
+    off_sac_pos: float = 12.0,
+    conformal_jump: int | None = None,
+    backward_compatible: bool = False,
+    method: str = "local_ls",
+    max_evals_per_point: int = 80,
+    convergence_tol: float = 1e-9,
+    bound_xy_to_map: bool = True,
+) -> np.ndarray:
+    """
+    Inverse of `warp_nodes` for point coordinates.
+
+    `method="local_ls"` mirrors the forward local least-squares model with
+    swapped correspondences (flattened -> curved frame).
+    `method="optimize"` refines per-point inverse coordinates by minimizing
+    forward residuals (`warp_nodes(x) ~= target`).
+    Input nodes are assumed to be normalized warped coordinates and are
+    denormalized using the provided ON/OFF SAC reference positions.
+    """
+    prenormed_nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts = (
+        _prepare_unwarp_inputs(
+            nodes,
+            surface_mapping,
+            on_sac_pos=on_sac_pos,
+            off_sac_pos=off_sac_pos,
+            conformal_jump=conformal_jump,
             backward_compatible=backward_compatible,
         )
     )
@@ -114,10 +133,10 @@ def unwarp_nodes(
     if method != "optimize":
         raise ValueError("method must be one of {'local_ls', 'optimize'}")
 
-    if optimize_max_evals_per_point <= 0:
-        raise ValueError("optimize_max_evals_per_point must be a positive integer.")
-    if optimize_convergence_tol <= 0:
-        raise ValueError("optimize_convergence_tol must be a positive float.")
+    if max_evals_per_point <= 0:
+        raise ValueError("max_evals_per_point must be a positive integer.")
+    if convergence_tol <= 0:
+        raise ValueError("convergence_tol must be a positive float.")
 
     # Start from the fast approximate inverse and refine against the forward model.
     inverse_state = _build_local_ls_state(
@@ -139,7 +158,7 @@ def unwarp_nodes(
         max_order=2,
     )
 
-    if optimize_bound_xy_to_map:
+    if bound_xy_to_map:
         x_min = float(min(on_input_pts[:, 0].min(), off_input_pts[:, 0].min()))
         x_max = float(max(on_input_pts[:, 0].max(), off_input_pts[:, 0].max()))
         y_min = float(min(on_input_pts[:, 1].min(), off_input_pts[:, 1].min()))
@@ -153,7 +172,7 @@ def unwarp_nodes(
     recovered = np.empty_like(prenormed_nodes)
     for i, target in enumerate(prenormed_nodes):
         x0 = initial[i].astype(float, copy=True)
-        if optimize_bound_xy_to_map:
+        if bound_xy_to_map:
             x0[:2] = np.clip(x0[:2], lower_bounds[:2], upper_bounds[:2])
 
         def _residual(x: np.ndarray) -> np.ndarray:
@@ -165,10 +184,10 @@ def unwarp_nodes(
             x0=x0,
             bounds=(lower_bounds, upper_bounds),
             method="trf",
-            max_nfev=int(optimize_max_evals_per_point),
-            ftol=float(optimize_convergence_tol),
-            xtol=float(optimize_convergence_tol),
-            gtol=float(optimize_convergence_tol),
+            max_nfev=int(max_evals_per_point),
+            ftol=float(convergence_tol),
+            xtol=float(convergence_tol),
+            gtol=float(convergence_tol),
         )
         recovered[i] = sol.x
 
