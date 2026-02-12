@@ -46,6 +46,7 @@ from skeliner.dataclass import Skeleton
 from skeliner.dx import _ellipsoid_aabb, _voxelize_union
 
 from .surface import build_mapping, fit_sac_surface
+from .utils import build_surface_correspondences, resolve_conformal_jump
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
 
@@ -187,97 +188,19 @@ def warp_nodes(
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
-    # Unpack mappings and surfaces
-    mapped_on = surface_mapping["mapped_on"]
-    mapped_off = surface_mapping["mapped_off"]
-    on_sac_surface = surface_mapping["on_sac_surface"]
-    off_sac_surface = surface_mapping["off_sac_surface"]
-
-    if backward_compatible:
-        sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
-        sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
-        # this is one ugly hack: thisx and thisy are 1-based in MATLAB
-        # but 0-based in Python; the rest of the code is to produce exact
-        # same results as MATLAB given the SAME input, that means thisx and
-        # thisy needs to be 1-based, but we need to shift it back to 0-based
-        # when slicing
-    else:
-        sampled_x_idx = surface_mapping["sampled_x_idx"]
-        sampled_y_idx = surface_mapping["sampled_y_idx"]
-
-    # Convert MATLAB 1-based inclusive ranges to Python slices
-    # If thisx/thisy are consecutive integer indices:
-    # x_vals = np.arange(thisx[0], thisx[-1] + 1)  # matches [thisx(1):thisx(end)] in MATLAB
-    # y_vals = np.arange(thisy[0], thisy[-1] + 1)  # matches [thisy(1):thisy(end)] in MATLAB
-    if conformal_jump is None:
-        try:
-            conformal_jump = surface_mapping["conformal_jump"]
-        except KeyError:
-            raise ValueError(
-                "conformal_jump must be provided or found in surface_mapping."
-            )
-    x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
-    y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
-
-    # Create a meshgrid shaped like MATLAB's [tmpymesh, tmpxmesh] = meshgrid(yRange, xRange).
-    # This means we want shape (len(x_vals), len(y_vals)) for each array, with row=“x”, col=“y”:
-    xmesh, ymesh = np.meshgrid(x_vals, y_vals, indexing="ij")
-    # xmesh.shape == ymesh.shape == (len(x_vals), len(y_vals))
-
-    # Extract the corresponding subregion of the surfaces so it also has shape (len(x_vals), len(y_vals)).
-    # In MATLAB: tmpminmesh = thisVZminmesh(xRange, yRange)
-    if backward_compatible:
-        on_subsampled_depths = on_sac_surface[
-            x_vals[:, None] - 1, y_vals - 1
-        ]  # shape (len(x_vals), len(y_vals))
-        off_subsampled_depths = off_sac_surface[
-            x_vals[:, None] - 1, y_vals - 1
-        ]  # shape (len(x_vals), len(y_vals))
-    else:
-        on_subsampled_depths = on_sac_surface[x_vals[:, None], y_vals]
-        off_subsampled_depths = off_sac_surface[x_vals[:, None], y_vals]
-
-    # Now flatten in column-major order (like MATLAB’s A(:)) to line up with tmpxmesh(:), etc.
-    on_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            on_subsampled_depths.ravel(order="F"),
-        ]
-    )  # old topInputPos
-
-    off_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            off_subsampled_depths.ravel(order="F"),
-        ]
-    )  # old botInputPos
-
-    on_output_pts = np.column_stack(
-        [
-            mapped_on[:, 0],
-            mapped_on[:, 1],
-            np.median(on_subsampled_depths) * np.ones(mapped_on.shape[0]),
-        ]
-    )
-
-    off_output_pts = np.column_stack(
-        [
-            mapped_off[:, 0],
-            mapped_off[:, 1],
-            np.median(off_subsampled_depths) * np.ones(mapped_off.shape[0]),
-        ]
+    resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
+    on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off = (
+        build_surface_correspondences(
+            surface_mapping,
+            conformal_jump=resolved_jump,
+            backward_compatible=backward_compatible,
+        )
     )
 
     # Apply local least-squares registration to each node
     warped = local_ls_registration(
         nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
     )
-
-    # Compute median Z-planes
-    med_z_on = np.median(on_subsampled_depths)
-    med_z_off = np.median(off_subsampled_depths)
 
     return warped, med_z_on, med_z_off
 
