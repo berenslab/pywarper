@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import numpy as np
 from scipy.optimize import least_squares
+from skeliner.dataclass import Skeleton
 
 from .utils import build_surface_correspondences, resolve_conformal_jump
 from .warpers import (
@@ -192,3 +195,102 @@ def unwarp_nodes(
         recovered[i] = sol.x
 
     return recovered
+
+
+def _coerce_voxel_resolution(
+    voxel_resolution: float
+    | list[float | int]
+    | tuple[float | int, float | int, float | int]
+) -> np.ndarray:
+    voxel_res = np.asarray(voxel_resolution, dtype=float)
+    if voxel_res.ndim == 0:
+        voxel_res = np.repeat(voxel_res, 3)
+    if voxel_res.shape != (3,):
+        raise ValueError("voxel_resolution must be a scalar or a length-3 sequence.")
+    if np.any(np.isclose(voxel_res, 0.0)):
+        raise ValueError("voxel_resolution entries must be non-zero.")
+    return voxel_res
+
+
+def unwarp_skeleton(
+    skel: Skeleton,
+    surface_mapping: dict,
+    *,
+    voxel_resolution: float
+    | list[float | int]
+    | tuple[float | int, float | int, float | int] = (1.0, 1.0, 1.0),
+    on_sac_pos: float = 0.0,
+    off_sac_pos: float = 12.0,
+    skeleton_nodes_scale: float = 1.0,
+    conformal_jump: int | None = None,
+    backward_compatible: bool = False,
+    method: str = "local_ls",
+    max_evals_per_point: int = 80,
+    convergence_tol: float = 1e-9,
+    bound_xy_to_map: bool = True,
+) -> Skeleton:
+    """
+    Inverse of `warp_skeleton` for Skeleton objects.
+
+    Parameters
+    ----------
+    skel : Skeleton
+        Warped skeleton, typically produced by `warp_skeleton`.
+    surface_mapping : dict
+        Surface mapping used for the forward warp.
+    voxel_resolution : float or length-3 sequence, default=(1.0, 1.0, 1.0)
+        Resolution that was used in `warp_skeleton` to convert warped nodes
+        to physical units. It is undone before node-level inversion.
+    on_sac_pos, off_sac_pos : float
+        SAC reference positions used during normalization in the forward pass.
+    skeleton_nodes_scale : float, default=1.0
+        Scale factor that was used in `warp_skeleton` before warping.
+    conformal_jump, backward_compatible
+        Mapping options forwarded to `unwarp_nodes`.
+    method, max_evals_per_point, convergence_tol, bound_xy_to_map
+        Inversion options forwarded to `unwarp_nodes`.
+
+    Returns
+    -------
+    Skeleton
+        Skeleton with recovered nodes in the original (pre-warp) node units.
+    """
+    scale = float(skeleton_nodes_scale)
+    if np.isclose(scale, 0.0):
+        raise ValueError("skeleton_nodes_scale must be non-zero.")
+
+    voxel_res = _coerce_voxel_resolution(voxel_resolution)
+
+    # `warp_skeleton` stores nodes in physical units, so undo that first.
+    normalized_nodes = np.asarray(skel.nodes, dtype=float) / voxel_res
+    # `warp_skeleton` divides by this scale before returning the skeleton.
+    normalized_nodes *= scale
+
+    recovered_nodes = unwarp_nodes(
+        normalized_nodes,
+        surface_mapping,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+        conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
+        method=method,
+        max_evals_per_point=max_evals_per_point,
+        convergence_tol=convergence_tol,
+        bound_xy_to_map=bound_xy_to_map,
+    )
+    recovered_nodes /= scale
+
+    recovered_soma = deepcopy(skel.soma)
+    recovered_soma.center = recovered_nodes[0].copy()
+
+    return Skeleton(
+        soma=recovered_soma,
+        nodes=recovered_nodes,
+        edges=skel.edges,
+        radii=skel.radii,
+        ntype=skel.ntype,
+        node2verts=skel.node2verts,
+        vert2node=skel.vert2node,
+        meta=skel.meta.copy(),
+        extra=skel.extra.copy(),
+    )
