@@ -46,6 +46,7 @@ from skeliner.dataclass import Skeleton
 from skeliner.dx import _ellipsoid_aabb, _voxelize_union
 
 from .surface import build_mapping, fit_sac_surface
+from .utils import build_surface_correspondences, resolve_conformal_jump
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
 
@@ -69,24 +70,15 @@ def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
     return np.stack(cols, axis=1)  # (N, n_terms)
 
 
-def local_ls_registration(
-    nodes: np.ndarray,
+def _build_local_ls_state(
     top_input_pos: np.ndarray,
     bot_input_pos: np.ndarray,
     top_output_pos: np.ndarray,
     bot_output_pos: np.ndarray,
-    window: float = 5.0,
-    max_order: int = 2,
-) -> np.ndarray:
-    """
-    Same algorithm as before, but a **single KDTree** stores both
-    surfaces.  The neighbour search is therefore performed once.
-    """
-    transformed_nodes = np.zeros_like(nodes)
-
-    # ------------------------------------------------------------------
-    # 0.  merge the two bands  -----------------------------------------
-    # ------------------------------------------------------------------
+    *,
+    window: float,
+    max_order: int,
+) -> dict[str, np.ndarray | KDTree | float | int]:
     in_all = np.vstack((top_input_pos, bot_input_pos))
     out_all = np.vstack((top_output_pos, bot_output_pos))
     is_top = np.concatenate(
@@ -95,23 +87,44 @@ def local_ls_registration(
             np.zeros(len(bot_input_pos), dtype=bool),
         )
     )
-
-    all_xy = in_all[:, :2]  # (Mtot, 2)
-
-    # ------------------------------------------------------------------
-    # 1.  one KD-tree and a *batched* query
-    # ------------------------------------------------------------------
-    query_r = window * np.sqrt(2.0)  # circumscribes rectangle
+    all_xy = in_all[:, :2]
+    query_r = window * np.sqrt(2.0)
     tree = KDTree(all_xy)
-    idx_lists = tree.query_ball_point(nodes[:, :2], r=query_r, workers=-1)
+    return {
+        "in_all": in_all,
+        "out_all": out_all,
+        "is_top": is_top,
+        "all_xy": all_xy,
+        "query_r": query_r,
+        "tree": tree,
+        "window": float(window),
+        "max_order": int(max_order),
+    }
 
-    # ------------------------------------------------------------------
-    # 2.  per-node loop (same math as before)
-    # ------------------------------------------------------------------
+
+def _apply_local_ls_state(
+    nodes: np.ndarray,
+    state: dict[str, np.ndarray | KDTree | float | int],
+    *,
+    warn: bool = True,
+) -> np.ndarray:
+    transformed_nodes = np.zeros_like(nodes)
+
+    in_all = state["in_all"]
+    out_all = state["out_all"]
+    is_top = state["is_top"]
+    all_xy = state["all_xy"]
+    query_r = state["query_r"]
+    tree = state["tree"]
+    window = state["window"]
+    max_order = state["max_order"]
+
+    workers = -1 if nodes.shape[0] >= 512 else 1
+    idx_lists = tree.query_ball_point(nodes[:, :2], r=query_r, workers=workers)
+
     for k, (x, y, z) in enumerate(nodes):
-        idx = np.array(idx_lists[k], dtype=int)  # neighbour indices
+        idx = np.array(idx_lists[k], dtype=int)
 
-        # rectangular mask (identical criterion)
         lx, ux = x - window, x + window
         ly, uy = y - window, y + window
         mask_rect = (
@@ -121,15 +134,15 @@ def local_ls_registration(
             & (all_xy[idx, 1] <= uy)
         )
 
-        idx = idx[mask_rect]  # inside the rectangle
+        idx = idx[mask_rect]
         if idx.size == 0:
-            print(
-                f"[pywarper] Warning: no neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})"
-            )
+            if warn:
+                print(
+                    f"[pywarper] Warning: no neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})"
+                )
             transformed_nodes[k] = nodes[k]
             continue
 
-        # split back into top / bottom — order preserved
         idx_top = idx[is_top[idx]]
         idx_bot = idx[~is_top[idx]]
 
@@ -140,13 +153,13 @@ def local_ls_registration(
         this_out = np.vstack((out_top, out_bot))
 
         if this_in.shape[0] < 12:
-            print(
-                f"[pywarper] Warning: not enough neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})"
-            )
+            if warn:
+                print(
+                    f"[pywarper] Warning: not enough neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})"
+                )
             transformed_nodes[k] = nodes[k]
             continue
 
-        # centre the neighbourhood
         shift_xy = this_in[:, :2].mean(axis=0)
         xin, yin, zin = (
             this_in[:, 0] - shift_xy[0],
@@ -160,25 +173,45 @@ def local_ls_registration(
             this_out[:, 2],
         )
 
-        # polynomial basis
-        base_terms = poly_basis_2d(xin, yin, max_order)  # (n_pts, n_terms)
-        X = np.hstack((base_terms, base_terms * zin[:, None]))  # z-modulated
+        base_terms = poly_basis_2d(xin, yin, max_order)
+        X = np.hstack((base_terms, base_terms * zin[:, None]))
 
-        # least-squares solve
         T, _, _, _ = lstsq(X, np.column_stack((xout, yout, zout)), rcond=None)
 
-        # evaluate at the node
         nx, ny = nodes[k, 0] - shift_xy[0], nodes[k, 1] - shift_xy[1]
         basis_eval = poly_basis_2d(np.array([nx]), np.array([ny]), max_order).ravel()
-
         vec = np.concatenate((basis_eval, z * basis_eval))
         new_pos = vec @ T
 
-        # undo shift
         new_pos[:2] += shift_xy
         transformed_nodes[k] = new_pos
 
     return transformed_nodes
+
+
+def local_ls_registration(
+    nodes: np.ndarray,
+    top_input_pos: np.ndarray,
+    bot_input_pos: np.ndarray,
+    top_output_pos: np.ndarray,
+    bot_output_pos: np.ndarray,
+    window: float = 5.0,
+    max_order: int = 2,
+    warn: bool = True,
+) -> np.ndarray:
+    """
+    Same algorithm as before, but a **single KDTree** stores both
+    surfaces.  The neighbour search is therefore performed once.
+    """
+    state = _build_local_ls_state(
+        top_input_pos,
+        bot_input_pos,
+        top_output_pos,
+        bot_output_pos,
+        window=window,
+        max_order=max_order,
+    )
+    return _apply_local_ls_state(nodes, state, warn=warn)
 
 
 def warp_nodes(
@@ -187,97 +220,19 @@ def warp_nodes(
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
-    # Unpack mappings and surfaces
-    mapped_on = surface_mapping["mapped_on"]
-    mapped_off = surface_mapping["mapped_off"]
-    on_sac_surface = surface_mapping["on_sac_surface"]
-    off_sac_surface = surface_mapping["off_sac_surface"]
-
-    if backward_compatible:
-        sampled_x_idx = surface_mapping["sampled_x_idx"] + 1
-        sampled_y_idx = surface_mapping["sampled_y_idx"] + 1
-        # this is one ugly hack: thisx and thisy are 1-based in MATLAB
-        # but 0-based in Python; the rest of the code is to produce exact
-        # same results as MATLAB given the SAME input, that means thisx and
-        # thisy needs to be 1-based, but we need to shift it back to 0-based
-        # when slicing
-    else:
-        sampled_x_idx = surface_mapping["sampled_x_idx"]
-        sampled_y_idx = surface_mapping["sampled_y_idx"]
-
-    # Convert MATLAB 1-based inclusive ranges to Python slices
-    # If thisx/thisy are consecutive integer indices:
-    # x_vals = np.arange(thisx[0], thisx[-1] + 1)  # matches [thisx(1):thisx(end)] in MATLAB
-    # y_vals = np.arange(thisy[0], thisy[-1] + 1)  # matches [thisy(1):thisy(end)] in MATLAB
-    if conformal_jump is None:
-        try:
-            conformal_jump = surface_mapping["conformal_jump"]
-        except KeyError:
-            raise ValueError(
-                "conformal_jump must be provided or found in surface_mapping."
-            )
-    x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
-    y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
-
-    # Create a meshgrid shaped like MATLAB's [tmpymesh, tmpxmesh] = meshgrid(yRange, xRange).
-    # This means we want shape (len(x_vals), len(y_vals)) for each array, with row=“x”, col=“y”:
-    xmesh, ymesh = np.meshgrid(x_vals, y_vals, indexing="ij")
-    # xmesh.shape == ymesh.shape == (len(x_vals), len(y_vals))
-
-    # Extract the corresponding subregion of the surfaces so it also has shape (len(x_vals), len(y_vals)).
-    # In MATLAB: tmpminmesh = thisVZminmesh(xRange, yRange)
-    if backward_compatible:
-        on_subsampled_depths = on_sac_surface[
-            x_vals[:, None] - 1, y_vals - 1
-        ]  # shape (len(x_vals), len(y_vals))
-        off_subsampled_depths = off_sac_surface[
-            x_vals[:, None] - 1, y_vals - 1
-        ]  # shape (len(x_vals), len(y_vals))
-    else:
-        on_subsampled_depths = on_sac_surface[x_vals[:, None], y_vals]
-        off_subsampled_depths = off_sac_surface[x_vals[:, None], y_vals]
-
-    # Now flatten in column-major order (like MATLAB’s A(:)) to line up with tmpxmesh(:), etc.
-    on_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            on_subsampled_depths.ravel(order="F"),
-        ]
-    )  # old topInputPos
-
-    off_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            off_subsampled_depths.ravel(order="F"),
-        ]
-    )  # old botInputPos
-
-    on_output_pts = np.column_stack(
-        [
-            mapped_on[:, 0],
-            mapped_on[:, 1],
-            np.median(on_subsampled_depths) * np.ones(mapped_on.shape[0]),
-        ]
-    )
-
-    off_output_pts = np.column_stack(
-        [
-            mapped_off[:, 0],
-            mapped_off[:, 1],
-            np.median(off_subsampled_depths) * np.ones(mapped_off.shape[0]),
-        ]
+    resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
+    on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off = (
+        build_surface_correspondences(
+            surface_mapping,
+            conformal_jump=resolved_jump,
+            backward_compatible=backward_compatible,
+        )
     )
 
     # Apply local least-squares registration to each node
     warped = local_ls_registration(
         nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
     )
-
-    # Compute median Z-planes
-    med_z_on = np.median(on_subsampled_depths)
-    med_z_off = np.median(off_subsampled_depths)
 
     return warped, med_z_on, med_z_off
 
