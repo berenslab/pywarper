@@ -18,10 +18,11 @@ from .warpers import (
 
 def denormalize_nodes(
     nodes: np.ndarray,
-    med_z: dict[str, float] | float,
+    median_depths: dict[str, float] | None = None,
     anchors: tuple[str, str] = ("on_sac", "off_sac"),
     anchor_pos: tuple[float, float] = (0.0, 12.0),
     *,
+    med_z_on: float | None = None,
     med_z_off: float | None = None,
     on_sac_pos: float | None = None,
     off_sac_pos: float | None = None,
@@ -33,16 +34,16 @@ def denormalize_nodes(
     ----------
     nodes : np.ndarray
         (N, 3) normalized [x, y, z] coordinates.
-    med_z : dict[str, float] or float
-        If dict: mapping of surface tag -> median z.
-        If float: legacy usage where this is ``med_z_on`` and *med_z_off*
-        must also be supplied.
+    median_depths : dict[str, float] or None
+        Mapping of surface tag -> median z depth.
+        When None, *med_z_on* and *med_z_off* must be supplied instead.
     anchors : tuple[str, str]
         Tags of the two anchor surfaces.
     anchor_pos : tuple[float, float]
         Normalized positions for the two anchors.
-    med_z_off : float | None
-        Legacy keyword.
+    med_z_on, med_z_off : float | None
+        Legacy keywords for the two-surface case. Used when *median_depths*
+        is None.
     on_sac_pos, off_sac_pos : float | None
         Legacy keywords that override *anchor_pos*.
 
@@ -56,12 +57,22 @@ def denormalize_nodes(
         raise ValueError("nodes must be an (N, 3) array.")
 
     # ---- resolve legacy call convention ------------------------------------
-    if isinstance(med_z, (int, float)):
+    if median_depths is None:
+        if med_z_on is None or med_z_off is None:
+            raise ValueError(
+                "Either median_depths dict or both med_z_on and med_z_off must be provided."
+            )
+        median_depths_dict: dict[str, float] = {
+            "on_sac": float(med_z_on),
+            "off_sac": float(med_z_off),
+        }
+    elif isinstance(median_depths, (int, float)):
+        # Positional scalar: treat as med_z_on for backward compat
         if med_z_off is None:
-            raise ValueError("med_z_off must be provided when med_z is a scalar (legacy API).")
-        med_z_dict: dict[str, float] = {"on_sac": float(med_z), "off_sac": float(med_z_off)}
+            raise ValueError("med_z_off must be provided when median_depths is a scalar (legacy API).")
+        median_depths_dict = {"on_sac": float(median_depths), "off_sac": float(med_z_off)}
     else:
-        med_z_dict = med_z
+        median_depths_dict = median_depths
 
     if on_sac_pos is not None:
         anchor_pos = (on_sac_pos, anchor_pos[1] if off_sac_pos is None else off_sac_pos)
@@ -71,8 +82,8 @@ def denormalize_nodes(
     if np.isclose(anchor_pos[1], anchor_pos[0]):
         raise ValueError("anchor positions must be different values.")
 
-    z_a = med_z_dict[anchors[0]]
-    z_b = med_z_dict[anchors[1]]
+    z_a = median_depths_dict[anchors[0]]
+    z_b = median_depths_dict[anchors[1]]
 
     denormalized_nodes = nodes.copy()
     rel_depth = (nodes[:, 2] - anchor_pos[0]) / (anchor_pos[1] - anchor_pos[0])
@@ -94,7 +105,7 @@ def _prepare_unwarp_inputs(
         raise ValueError("nodes must be an (N, 3) array.")
 
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    input_pts_list, output_pts_list, med_z = build_surface_correspondences(
+    input_pts_list, output_pts_list, median_depths = build_surface_correspondences(
         surface_mapping,
         conformal_jump=resolved_jump,
         backward_compatible=backward_compatible,
@@ -102,7 +113,7 @@ def _prepare_unwarp_inputs(
 
     prenormed_nodes = denormalize_nodes(
         points,
-        med_z=med_z,
+        median_depths=median_depths,
         anchor_pos=(on_sac_pos, off_sac_pos),
     )
 

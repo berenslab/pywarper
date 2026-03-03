@@ -206,10 +206,10 @@ def warp_nodes(
     Returns
     -------
     warped : (N, 3) array
-    med_z : dict mapping surface tag -> median z
+    median_depths : dict mapping surface tag -> median z
     """
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    input_pts_list, output_pts_list, med_z = build_surface_correspondences(
+    input_pts_list, output_pts_list, median_depths = build_surface_correspondences(
         surface_mapping,
         conformal_jump=resolved_jump,
         backward_compatible=backward_compatible,
@@ -217,16 +217,16 @@ def warp_nodes(
 
     warped = local_ls_registration(nodes, input_pts_list, output_pts_list)
 
-    return warped, med_z
+    return warped, median_depths
 
 
 def normalize_nodes(
     nodes: np.ndarray,
-    med_z: dict[str, float] | float,
+    median_depths: dict[str, float] | None = None,
     anchors: tuple[str, str] = ("on_sac", "off_sac"),
     anchor_pos: tuple[float, float] = (0.0, 12.0),
     *,
-    # Legacy positional arguments -- when med_z is a float it is med_z_on
+    med_z_on: float | None = None,
     med_z_off: float | None = None,
     on_sac_pos: float | None = None,
     off_sac_pos: float | None = None,
@@ -238,16 +238,16 @@ def normalize_nodes(
     ----------
     nodes : np.ndarray
         (N, 3) coordinates.
-    med_z : dict[str, float] or float
-        If dict: mapping of surface tag -> median z.
-        If float: legacy usage where this is ``med_z_on`` and *med_z_off*
-        must also be supplied.
+    median_depths : dict[str, float] or None
+        Mapping of surface tag -> median z depth.
+        When None, *med_z_on* and *med_z_off* must be supplied instead.
     anchors : tuple[str, str]
         Tags of the two anchor surfaces.
     anchor_pos : tuple[float, float]
         Desired normalized positions for the two anchors.
-    med_z_off : float | None
-        Legacy keyword.
+    med_z_on, med_z_off : float | None
+        Legacy keywords for the two-surface case. Used when *median_depths*
+        is None.
     on_sac_pos, off_sac_pos : float | None
         Legacy keywords that override *anchor_pos*.
 
@@ -257,21 +257,30 @@ def normalize_nodes(
         (N, 3) with normalized z.
     """
     # ---- resolve legacy call convention ------------------------------------
-    if isinstance(med_z, (int, float)):
-        # Legacy: normalize_nodes(nodes, med_z_on, med_z_off, on_sac_pos, off_sac_pos)
+    if median_depths is None:
+        if med_z_on is None or med_z_off is None:
+            raise ValueError(
+                "Either median_depths dict or both med_z_on and med_z_off must be provided."
+            )
+        median_depths_dict: dict[str, float] = {
+            "on_sac": float(med_z_on),
+            "off_sac": float(med_z_off),
+        }
+    elif isinstance(median_depths, (int, float)):
+        # Positional scalar: treat as med_z_on for backward compat
         if med_z_off is None:
-            raise ValueError("med_z_off must be provided when med_z is a scalar (legacy API).")
-        med_z_dict: dict[str, float] = {"on_sac": float(med_z), "off_sac": float(med_z_off)}
+            raise ValueError("med_z_off must be provided when median_depths is a scalar (legacy API).")
+        median_depths_dict = {"on_sac": float(median_depths), "off_sac": float(med_z_off)}
     else:
-        med_z_dict = med_z
+        median_depths_dict = median_depths
 
     if on_sac_pos is not None:
         anchor_pos = (on_sac_pos, anchor_pos[1] if off_sac_pos is None else off_sac_pos)
     if off_sac_pos is not None and on_sac_pos is None:
         anchor_pos = (anchor_pos[0], off_sac_pos)
 
-    z_a = med_z_dict[anchors[0]]
-    z_b = med_z_dict[anchors[1]]
+    z_a = median_depths_dict[anchors[0]]
+    z_b = median_depths_dict[anchors[1]]
 
     normalized_nodes = nodes.copy().astype(float)
     rel_depth = (nodes[:, 2] - z_a) / (z_b - z_a)
@@ -365,7 +374,7 @@ def warp_skeleton(
     if verbose:
         print("[pywarper] Warping skeleton...")
         start_time = time.time()
-    warped_nodes, med_z = warp_nodes(
+    warped_nodes, median_depths = warp_nodes(
         nodes,
         surface_mapping,
         conformal_jump=conformal_jump,
@@ -374,7 +383,7 @@ def warp_skeleton(
 
     normalized_nodes = normalize_nodes(
         warped_nodes,
-        med_z=med_z,
+        median_depths=median_depths,
         anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
@@ -429,9 +438,9 @@ def warp_skeleton(
     skel_norm.extra = {
         "prenormed_nodes": warped_nodes
         * voxel_resolution,  # keep the pre-normed warped nodes for future use
-        "med_z": med_z,
-        "med_z_on": float(med_z.get("on_sac", 0.0)),
-        "med_z_off": float(med_z.get("off_sac", 0.0)),
+        "median_depths": median_depths,
+        "med_z_on": float(median_depths.get("on_sac", 0.0)),
+        "med_z_off": float(median_depths.get("off_sac", 0.0)),
         "z_profiles": z_profiles,
         "xy_profiles": xy_profiles,
     }
@@ -467,7 +476,7 @@ def warp_mesh(
     if verbose:
         print("[pywarper] Warping mesh...")
         start_time = time.time()
-    warped_vertices, med_z = warp_nodes(
+    warped_vertices, median_depths = warp_nodes(
         vertices,
         surface_mapping,
         conformal_jump=conformal_jump,
@@ -476,7 +485,7 @@ def warp_mesh(
 
     normalized_vertices = normalize_nodes(
         warped_vertices,
-        med_z=med_z,
+        median_depths=median_depths,
         anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
@@ -491,9 +500,9 @@ def warp_mesh(
         process=False,  # no processing
     )
     warped_mesh.metadata = mesh.metadata.copy()  # copy metadata
-    warped_mesh.metadata["med_z"] = med_z
-    warped_mesh.metadata["med_z_on"] = float(med_z.get("on_sac", 0.0))
-    warped_mesh.metadata["med_z_off"] = float(med_z.get("off_sac", 0.0))
+    warped_mesh.metadata["median_depths"] = median_depths
+    warped_mesh.metadata["med_z_on"] = float(median_depths.get("on_sac", 0.0))
+    warped_mesh.metadata["med_z_off"] = float(median_depths.get("off_sac", 0.0))
     warped_mesh.metadata["conformal_jump"] = conformal_jump
     warped_mesh.metadata["surface_mapping"] = surface_mapping
     warped_mesh.metadata["on_sac_pos"] = on_sac_pos
@@ -1246,14 +1255,14 @@ class Warper:
         if self.warped_skeleton is None:
             raise RuntimeError("Warped skeleton missing. Call warp_skeleton() first.")
         else:
-            med_z = self.warped_skeleton.extra.get(
-                "med_z",
+            median_depths = self.warped_skeleton.extra.get(
+                "median_depths",
                 {"on_sac": self.warped_skeleton.extra["med_z_on"],
                  "off_sac": self.warped_skeleton.extra["med_z_off"]},
             )
             renormed_nodes = normalize_nodes(
                 self.warped_skeleton.extra["prenormed_nodes"],
-                med_z=med_z,
+                median_depths=median_depths,
                 anchor_pos=(on_sac_pos, off_sac_pos),
             )
 
@@ -1323,9 +1332,9 @@ class Warper:
 
         skel_renormed.extra = {
             "prenormed_nodes": self.warped_skeleton.extra["prenormed_nodes"],
-            "med_z": med_z,
-            "med_z_on": float(med_z.get("on_sac", 0.0)),
-            "med_z_off": float(med_z.get("off_sac", 0.0)),
+            "median_depths": median_depths,
+            "med_z_on": float(median_depths.get("on_sac", 0.0)),
+            "med_z_off": float(median_depths.get("off_sac", 0.0)),
             "z_profiles": z_profiles,
             "xy_profiles": xy_profiles,
         }

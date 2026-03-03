@@ -72,7 +72,7 @@ def build_surface_correspondences(
     -------
     input_pts_list : list of (K, 3) arrays, one per surface (depth-ordered)
     output_pts_list : list of (K, 3) arrays, one per surface (depth-ordered)
-    med_z : dict mapping tag -> median z
+    median_depths : dict mapping tag -> median z
     """
     mapping = _ensure_new_format(surface_mapping)
 
@@ -95,7 +95,7 @@ def build_surface_correspondences(
 
     input_pts_list = []
     output_pts_list = []
-    med_z = {}
+    median_depths = {}
 
     for tag in surface_order:
         surface = np.asarray(surfaces[tag], dtype=float)
@@ -112,7 +112,7 @@ def build_surface_correspondences(
             subsampled_depths = surface[x_vals[:, None], y_vals]
 
         med_z_val = float(np.median(subsampled_depths))
-        med_z[tag] = med_z_val
+        median_depths[tag] = med_z_val
 
         input_pts = np.column_stack(
             [
@@ -128,7 +128,7 @@ def build_surface_correspondences(
         input_pts_list.append(input_pts)
         output_pts_list.append(output_pts)
 
-    return input_pts_list, output_pts_list, med_z
+    return input_pts_list, output_pts_list, median_depths
 
 
 def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarray]:
