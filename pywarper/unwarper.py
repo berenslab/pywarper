@@ -8,10 +8,11 @@ import numpy as np
 from scipy.optimize import least_squares
 from skeliner.dataclass import Skeleton
 
-from .utils import build_surface_correspondences, resolve_conformal_jump
+from .utils import _ensure_new_format, build_surface_correspondences, resolve_conformal_jump
 from .warpers import (
     _apply_local_ls_state,
     _build_local_ls_state,
+    _select_flattening_surfaces,
     local_ls_registration,
 )
 
@@ -99,7 +100,7 @@ def _prepare_unwarp_inputs(
     off_sac_pos: float,
     conformal_jump: int | None,
     backward_compatible: bool,
-) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
+) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray], dict[str, float], list[str]]:
     points = np.asarray(nodes, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("nodes must be an (N, 3) array.")
@@ -111,13 +112,16 @@ def _prepare_unwarp_inputs(
         backward_compatible=backward_compatible,
     )
 
+    mapping_fmt = _ensure_new_format(surface_mapping)
+    surface_order = mapping_fmt["surface_order"]
+
     prenormed_nodes = denormalize_nodes(
         points,
         median_depths=median_depths,
         anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
-    return prenormed_nodes, input_pts_list, output_pts_list
+    return prenormed_nodes, input_pts_list, output_pts_list, median_depths, surface_order
 
 
 def unwarp_nodes(
@@ -128,6 +132,8 @@ def unwarp_nodes(
     off_sac_pos: float = 12.0,
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
+    flattening_surfaces: tuple[str, str] | None = None,
+    verbose: bool = False,
     method: str = "local_ls",
     max_evals_per_point: int = 80,
     convergence_tol: float = 1e-9,
@@ -142,22 +148,53 @@ def unwarp_nodes(
     forward residuals (`warp_nodes(x) ~= target`).
     Input nodes are assumed to be normalized warped coordinates and are
     denormalized using the provided ON/OFF SAC reference positions.
+
+    Parameters
+    ----------
+    flattening_surfaces : tuple[str, str] or None
+        Tags of the two surfaces to use for local LS registration.
+        When None, the two surfaces bracketing the cell's median depth
+        are selected automatically.
+    verbose : bool
+        If True, print which surfaces were selected for flattening.
     """
-    prenormed_nodes, input_pts_list, output_pts_list = _prepare_unwarp_inputs(
-        nodes,
-        surface_mapping,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
-        conformal_jump=conformal_jump,
-        backward_compatible=backward_compatible,
+    prenormed_nodes, input_pts_list, output_pts_list, median_depths, surface_order = (
+        _prepare_unwarp_inputs(
+            nodes,
+            surface_mapping,
+            on_sac_pos=on_sac_pos,
+            off_sac_pos=off_sac_pos,
+            conformal_jump=conformal_jump,
+            backward_compatible=backward_compatible,
+        )
     )
+
+    # Select the two surfaces for flattening (same logic as warp_nodes)
+    if flattening_surfaces is None:
+        flattening_surfaces = _select_flattening_surfaces(
+            prenormed_nodes, median_depths, surface_order,
+        )
+    if verbose:
+        print(
+            f"[pywarper] Unwarping with surfaces: "
+            f'"{flattening_surfaces[0]}" (z={median_depths[flattening_surfaces[0]]:.2f}) '
+            f'and "{flattening_surfaces[1]}" (z={median_depths[flattening_surfaces[1]]:.2f})'
+        )
+
+    # Filter to only the two selected surfaces
+    selected_input = []
+    selected_output = []
+    for i, tag in enumerate(surface_order):
+        if tag in flattening_surfaces:
+            selected_input.append(input_pts_list[i])
+            selected_output.append(output_pts_list[i])
 
     if method == "local_ls":
         # Inverse pass: swap forward correspondences (flattened -> curved frame).
         return local_ls_registration(
             prenormed_nodes,
-            output_pts_list,
-            input_pts_list,
+            selected_output,
+            selected_input,
         )
 
     if method != "optimize":
@@ -170,22 +207,22 @@ def unwarp_nodes(
 
     # Start from the fast approximate inverse and refine against the forward model.
     inverse_state = _build_local_ls_state(
-        output_pts_list,
-        input_pts_list,
+        selected_output,
+        selected_input,
         window=5.0,
         max_order=2,
     )
     initial = _apply_local_ls_state(prenormed_nodes, inverse_state, warn=False)
 
     forward_state = _build_local_ls_state(
-        input_pts_list,
-        output_pts_list,
+        selected_input,
+        selected_output,
         window=5.0,
         max_order=2,
     )
 
     if bound_xy_to_map:
-        all_input = np.vstack(input_pts_list)
+        all_input = np.vstack(selected_input)
         x_min = float(all_input[:, 0].min())
         x_max = float(all_input[:, 0].max())
         y_min = float(all_input[:, 1].min())
@@ -248,6 +285,8 @@ def unwarp_skeleton(
     skeleton_nodes_scale: float = 1.0,
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
+    flattening_surfaces: tuple[str, str] | None = None,
+    verbose: bool = False,
     method: str = "local_ls",
     max_evals_per_point: int = 80,
     convergence_tol: float = 1e-9,
@@ -271,6 +310,12 @@ def unwarp_skeleton(
         Scale factor that was used in `warp_skeleton` before warping.
     conformal_jump, backward_compatible
         Mapping options forwarded to `unwarp_nodes`.
+    flattening_surfaces : tuple[str, str] or None
+        Tags of the two surfaces to use for local LS registration.
+        When None, uses the value stored in ``skel.extra["flattening_surfaces"]``
+        if available, otherwise auto-selects from the denormalized node depths.
+    verbose : bool
+        If True, print which surfaces were selected for unwarping.
     method, max_evals_per_point, convergence_tol, bound_xy_to_map
         Inversion options forwarded to `unwarp_nodes`.
 
@@ -285,6 +330,10 @@ def unwarp_skeleton(
 
     voxel_res = _coerce_voxel_resolution(voxel_resolution)
 
+    # Retrieve flattening_surfaces from warp_skeleton's extra if not provided
+    if flattening_surfaces is None and hasattr(skel, "extra") and skel.extra:
+        flattening_surfaces = skel.extra.get("flattening_surfaces")
+
     # `warp_skeleton` stores nodes in physical units, so undo that first.
     normalized_nodes = np.asarray(skel.nodes, dtype=float) / voxel_res
     # `warp_skeleton` divides by this scale before returning the skeleton.
@@ -297,6 +346,8 @@ def unwarp_skeleton(
         off_sac_pos=off_sac_pos,
         conformal_jump=conformal_jump,
         backward_compatible=backward_compatible,
+        flattening_surfaces=flattening_surfaces,
+        verbose=verbose,
         method=method,
         max_evals_per_point=max_evals_per_point,
         convergence_tol=convergence_tol,

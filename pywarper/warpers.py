@@ -444,6 +444,12 @@ def warp_skeleton(
         verbose=verbose,
     )
 
+    # Record which surfaces were used for flattening (same logic as warp_nodes)
+    mapping_fmt = _ensure_new_format(surface_mapping)
+    flattening_surfaces = _select_flattening_surfaces(
+        nodes, median_depths, mapping_fmt["surface_order"],
+    )
+
     normalized_nodes = normalize_nodes(
         warped_nodes,
         median_depths=median_depths,
@@ -504,6 +510,7 @@ def warp_skeleton(
         "median_depths": median_depths,
         "med_z_on": float(median_depths.get("on_sac", 0.0)),
         "med_z_off": float(median_depths.get("off_sac", 0.0)),
+        "flattening_surfaces": flattening_surfaces,
         "z_profiles": z_profiles,
         "xy_profiles": xy_profiles,
     }
