@@ -1065,12 +1065,26 @@ class Warper:
         surfaces: dict[str, dict | tuple] | None = None,
         swc_path: str | None = None,
         *,
+        off_sac_points=None,
+        on_sac_points=None,
         voxel_resolution: list[float] = [1.0, 1.0, 1.0],
         verbose: bool = False,
     ) -> None:
         self.voxel_resolution = voxel_resolution
         self.verbose = verbose
         self.swc_path = swc_path
+
+        # ---- resolve legacy keyword arguments --------------------------------
+        if surfaces is None and (off_sac_points is not None or on_sac_points is not None):
+            if off_sac_points is None or on_sac_points is None:
+                raise ValueError(
+                    "Both off_sac_points and on_sac_points must be provided together."
+                )
+            surfaces = {"on_sac": on_sac_points, "off_sac": off_sac_points}
+        elif surfaces is not None and (off_sac_points is not None or on_sac_points is not None):
+            raise ValueError(
+                "Cannot provide both surfaces dict and off_sac_points/on_sac_points."
+            )
 
         self.surface_points: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         if surfaces is not None:
