@@ -46,7 +46,7 @@ from skeliner.dataclass import Skeleton
 from skeliner.dx import _ellipsoid_aabb, _voxelize_union
 
 from .surface import build_mapping, fit_surface
-from .utils import build_surface_correspondences, resolve_conformal_jump
+from .utils import _ensure_new_format, build_surface_correspondences, resolve_conformal_jump
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
 
@@ -194,14 +194,53 @@ def local_ls_registration(
     return _apply_local_ls_state(nodes, state, warn=warn)
 
 
+def _select_flattening_surfaces(
+    nodes: np.ndarray,
+    median_depths: dict[str, float],
+    surface_order: list[str],
+) -> tuple[str, str]:
+    """
+    Pick the two surfaces that bracket the cell's median depth.
+
+    If the cell is shallower than all surfaces, returns the two shallowest.
+    If deeper than all, returns the two deepest.
+    """
+    cell_median_z = float(np.median(nodes[:, 2]))
+
+    # surface_order is already sorted by depth
+    depths = [median_depths[tag] for tag in surface_order]
+
+    if len(surface_order) < 2:
+        raise ValueError("Need at least two surfaces for flattening.")
+
+    # Find the pair that brackets cell_median_z
+    for i in range(len(depths) - 1):
+        if cell_median_z <= depths[i + 1]:
+            return surface_order[i], surface_order[i + 1]
+
+    # Cell is deeper than all surfaces — use the two deepest
+    return surface_order[-2], surface_order[-1]
+
+
 def warp_nodes(
     nodes: np.ndarray,
     surface_mapping: dict,
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
+    flattening_surfaces: tuple[str, str] | None = None,
+    verbose: bool = False,
 ) -> tuple[np.ndarray, dict[str, float]]:
     """
     Warp *nodes* using a surface mapping.
+
+    Parameters
+    ----------
+    flattening_surfaces : tuple[str, str] or None
+        Tags of the two surfaces to use for local LS registration.
+        When None, the two surfaces bracketing the cell's median depth
+        are selected automatically.
+    verbose : bool
+        If True, print which surfaces were selected for flattening.
 
     Returns
     -------
@@ -215,7 +254,30 @@ def warp_nodes(
         backward_compatible=backward_compatible,
     )
 
-    warped = local_ls_registration(nodes, input_pts_list, output_pts_list)
+    mapping = _ensure_new_format(surface_mapping)
+    surface_order = mapping["surface_order"]
+
+    # Select the two surfaces for flattening
+    if flattening_surfaces is None:
+        flattening_surfaces = _select_flattening_surfaces(
+            nodes, median_depths, surface_order,
+        )
+    if verbose:
+        print(
+            f"[pywarper] Flattening with surfaces: "
+            f"\"{flattening_surfaces[0]}\" (z={median_depths[flattening_surfaces[0]]:.2f}) "
+            f"and \"{flattening_surfaces[1]}\" (z={median_depths[flattening_surfaces[1]]:.2f})"
+        )
+
+    # Filter to only the two selected surfaces
+    selected_input = []
+    selected_output = []
+    for i, tag in enumerate(surface_order):
+        if tag in flattening_surfaces:
+            selected_input.append(input_pts_list[i])
+            selected_output.append(output_pts_list[i])
+
+    warped = local_ls_registration(nodes, selected_input, selected_output)
 
     return warped, median_depths
 
@@ -379,6 +441,7 @@ def warp_skeleton(
         surface_mapping,
         conformal_jump=conformal_jump,
         backward_compatible=backward_compatible,
+        verbose=verbose,
     )
 
     normalized_nodes = normalize_nodes(
@@ -481,6 +544,7 @@ def warp_mesh(
         surface_mapping,
         conformal_jump=conformal_jump,
         backward_compatible=backward_compatible,
+        verbose=verbose,
     )
 
     normalized_vertices = normalize_nodes(
