@@ -45,7 +45,7 @@ from skeliner._core import _bfs_parents
 from skeliner.dataclass import Skeleton
 from skeliner.dx import _ellipsoid_aabb, _voxelize_union
 
-from .surface import build_mapping, fit_sac_surface
+from .surface import build_mapping, fit_surface
 from .utils import build_surface_correspondences, resolve_conformal_jump
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
@@ -71,29 +71,20 @@ def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
 
 
 def _build_local_ls_state(
-    top_input_pos: np.ndarray,
-    bot_input_pos: np.ndarray,
-    top_output_pos: np.ndarray,
-    bot_output_pos: np.ndarray,
+    input_pts_list: list[np.ndarray],
+    output_pts_list: list[np.ndarray],
     *,
     window: float,
     max_order: int,
 ) -> dict[str, np.ndarray | KDTree | float | int]:
-    in_all = np.vstack((top_input_pos, bot_input_pos))
-    out_all = np.vstack((top_output_pos, bot_output_pos))
-    is_top = np.concatenate(
-        (
-            np.ones(len(top_input_pos), dtype=bool),
-            np.zeros(len(bot_input_pos), dtype=bool),
-        )
-    )
+    in_all = np.vstack(input_pts_list)
+    out_all = np.vstack(output_pts_list)
     all_xy = in_all[:, :2]
     query_r = window * np.sqrt(2.0)
     tree = KDTree(all_xy)
     return {
         "in_all": in_all,
         "out_all": out_all,
-        "is_top": is_top,
         "all_xy": all_xy,
         "query_r": query_r,
         "tree": tree,
@@ -112,7 +103,6 @@ def _apply_local_ls_state(
 
     in_all = state["in_all"]
     out_all = state["out_all"]
-    is_top = state["is_top"]
     all_xy = state["all_xy"]
     query_r = state["query_r"]
     tree = state["tree"]
@@ -143,14 +133,8 @@ def _apply_local_ls_state(
             transformed_nodes[k] = nodes[k]
             continue
 
-        idx_top = idx[is_top[idx]]
-        idx_bot = idx[~is_top[idx]]
-
-        in_top, out_top = in_all[idx_top], out_all[idx_top]
-        in_bot, out_bot = in_all[idx_bot], out_all[idx_bot]
-
-        this_in = np.vstack((in_top, in_bot))
-        this_out = np.vstack((out_top, out_bot))
+        this_in = in_all[idx]
+        this_out = out_all[idx]
 
         if this_in.shape[0] < 12:
             if warn:
@@ -191,23 +175,19 @@ def _apply_local_ls_state(
 
 def local_ls_registration(
     nodes: np.ndarray,
-    top_input_pos: np.ndarray,
-    bot_input_pos: np.ndarray,
-    top_output_pos: np.ndarray,
-    bot_output_pos: np.ndarray,
+    input_pts_list: list[np.ndarray],
+    output_pts_list: list[np.ndarray],
     window: float = 5.0,
     max_order: int = 2,
     warn: bool = True,
 ) -> np.ndarray:
     """
-    Same algorithm as before, but a **single KDTree** stores both
-    surfaces.  The neighbour search is therefore performed once.
+    Local polynomial least-squares registration using a single KDTree
+    built from all surface control points.
     """
     state = _build_local_ls_state(
-        top_input_pos,
-        bot_input_pos,
-        top_output_pos,
-        bot_output_pos,
+        input_pts_list,
+        output_pts_list,
         window=window,
         max_order=max_order,
     )
@@ -219,66 +199,83 @@ def warp_nodes(
     surface_mapping: dict,
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
-) -> tuple[np.ndarray, float, float]:
+) -> tuple[np.ndarray, dict[str, float]]:
+    """
+    Warp *nodes* using a surface mapping.
+
+    Returns
+    -------
+    warped : (N, 3) array
+    med_z : dict mapping surface tag -> median z
+    """
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off = (
-        build_surface_correspondences(
-            surface_mapping,
-            conformal_jump=resolved_jump,
-            backward_compatible=backward_compatible,
-        )
+    input_pts_list, output_pts_list, med_z = build_surface_correspondences(
+        surface_mapping,
+        conformal_jump=resolved_jump,
+        backward_compatible=backward_compatible,
     )
 
-    # Apply local least-squares registration to each node
-    warped = local_ls_registration(
-        nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
-    )
+    warped = local_ls_registration(nodes, input_pts_list, output_pts_list)
 
-    return warped, med_z_on, med_z_off
+    return warped, med_z
 
 
 def normalize_nodes(
     nodes: np.ndarray,
-    med_z_on: float,
-    med_z_off: float,
-    on_sac_pos: float = 0.0,
-    off_sac_pos: float = 12.0,
+    med_z: dict[str, float] | float,
+    anchors: tuple[str, str] = ("on_sac", "off_sac"),
+    anchor_pos: tuple[float, float] = (0.0, 12.0),
+    *,
+    # Legacy positional arguments -- when med_z is a float it is med_z_on
+    med_z_off: float | None = None,
+    on_sac_pos: float | None = None,
+    off_sac_pos: float | None = None,
 ) -> np.ndarray:
     """
-    Normalize the z-coordinates of nodes based on the median z-values
-    of the ON and OFF SAC surfaces.
-    This function rescales the z-coordinates of the nodes to a normalized
-    space where the ON SAC surface is at `on_sac_pos` and the OFF SAC
-    surface is at `off_sac_pos`. The z-coordinates are adjusted based on
-    the provided median z-values of the ON and OFF SAC surfaces.
+    Normalize the z-coordinates based on two anchor surfaces.
 
     Parameters
     ----------
     nodes : np.ndarray
-        (N, 3) array of [x, y, z] coordinates for the nodes to be normalized.
-    med_z_on : float
-        Median z-value of the ON SAC surface.
-    med_z_off : float
-        Median z-value of the OFF SAC surface.
-    on_sac_pos : float, default=0.0
-        Desired position of the ON SAC surface in the normalized space (µm).
-    off_sac_pos : float, default=12.0
-        Desired position of the OFF SAC surface in the normalized space (µm).
-    z_res : float, default=1.0
-        Spatial resolution along z (µm / voxel) after warping.
+        (N, 3) coordinates.
+    med_z : dict[str, float] or float
+        If dict: mapping of surface tag -> median z.
+        If float: legacy usage where this is ``med_z_on`` and *med_z_off*
+        must also be supplied.
+    anchors : tuple[str, str]
+        Tags of the two anchor surfaces.
+    anchor_pos : tuple[float, float]
+        Desired normalized positions for the two anchors.
+    med_z_off : float | None
+        Legacy keyword.
+    on_sac_pos, off_sac_pos : float | None
+        Legacy keywords that override *anchor_pos*.
+
     Returns
     -------
     np.ndarray
-        (N, 3) array of [x, y, z] coordinates with normalized z-coordinates.
+        (N, 3) with normalized z.
     """
+    # ---- resolve legacy call convention ------------------------------------
+    if isinstance(med_z, (int, float)):
+        # Legacy: normalize_nodes(nodes, med_z_on, med_z_off, on_sac_pos, off_sac_pos)
+        if med_z_off is None:
+            raise ValueError("med_z_off must be provided when med_z is a scalar (legacy API).")
+        med_z_dict: dict[str, float] = {"on_sac": float(med_z), "off_sac": float(med_z_off)}
+    else:
+        med_z_dict = med_z
+
+    if on_sac_pos is not None:
+        anchor_pos = (on_sac_pos, anchor_pos[1] if off_sac_pos is None else off_sac_pos)
+    if off_sac_pos is not None and on_sac_pos is None:
+        anchor_pos = (anchor_pos[0], off_sac_pos)
+
+    z_a = med_z_dict[anchors[0]]
+    z_b = med_z_dict[anchors[1]]
+
     normalized_nodes = nodes.copy().astype(float)
-
-    # Compute the relative depth of each node
-    rel_depth = (nodes[:, 2] - med_z_on) / (med_z_off - med_z_on)  # 0→ON, 1→OFF
-
-    # Rescale the z-coordinates to the normalized space
-    z_phys = on_sac_pos + rel_depth * (off_sac_pos - on_sac_pos)  # µm in global frame
-    normalized_nodes[:, 2] = z_phys  # update the z-coordinate to the flattened space
+    rel_depth = (nodes[:, 2] - z_a) / (z_b - z_a)
+    normalized_nodes[:, 2] = anchor_pos[0] + rel_depth * (anchor_pos[1] - anchor_pos[0])
 
     return normalized_nodes
 
@@ -368,7 +365,7 @@ def warp_skeleton(
     if verbose:
         print("[pywarper] Warping skeleton...")
         start_time = time.time()
-    warped_nodes, med_z_on, med_z_off = warp_nodes(
+    warped_nodes, med_z = warp_nodes(
         nodes,
         surface_mapping,
         conformal_jump=conformal_jump,
@@ -377,10 +374,8 @@ def warp_skeleton(
 
     normalized_nodes = normalize_nodes(
         warped_nodes,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
+        med_z=med_z,
+        anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
     normalized_nodes /= skeleton_nodes_scale
@@ -434,8 +429,9 @@ def warp_skeleton(
     skel_norm.extra = {
         "prenormed_nodes": warped_nodes
         * voxel_resolution,  # keep the pre-normed warped nodes for future use
-        "med_z_on": float(med_z_on),
-        "med_z_off": float(med_z_off),
+        "med_z": med_z,
+        "med_z_on": float(med_z.get("on_sac", 0.0)),
+        "med_z_off": float(med_z.get("off_sac", 0.0)),
         "z_profiles": z_profiles,
         "xy_profiles": xy_profiles,
     }
@@ -471,7 +467,7 @@ def warp_mesh(
     if verbose:
         print("[pywarper] Warping mesh...")
         start_time = time.time()
-    warped_vertices, med_z_on, med_z_off = warp_nodes(
+    warped_vertices, med_z = warp_nodes(
         vertices,
         surface_mapping,
         conformal_jump=conformal_jump,
@@ -480,10 +476,8 @@ def warp_mesh(
 
     normalized_vertices = normalize_nodes(
         warped_vertices,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
+        med_z=med_z,
+        anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
     if verbose:
@@ -497,8 +491,9 @@ def warp_mesh(
         process=False,  # no processing
     )
     warped_mesh.metadata = mesh.metadata.copy()  # copy metadata
-    warped_mesh.metadata["med_z_on"] = float(med_z_on)
-    warped_mesh.metadata["med_z_off"] = float(med_z_off)
+    warped_mesh.metadata["med_z"] = med_z
+    warped_mesh.metadata["med_z_on"] = float(med_z.get("on_sac", 0.0))
+    warped_mesh.metadata["med_z_off"] = float(med_z.get("off_sac", 0.0))
     warped_mesh.metadata["conformal_jump"] = conformal_jump
     warped_mesh.metadata["surface_mapping"] = surface_mapping
     warped_mesh.metadata["on_sac_pos"] = on_sac_pos
@@ -994,12 +989,7 @@ class Warper:
 
     def __init__(
         self,
-        off_sac_points: dict[str, np.ndarray]
-        | tuple[np.ndarray, np.ndarray, np.ndarray]
-        | None = None,
-        on_sac_points: dict[str, np.ndarray]
-        | tuple[np.ndarray, np.ndarray, np.ndarray]
-        | None = None,
+        surfaces: dict[str, dict | tuple] | None = None,
         swc_path: str | None = None,
         *,
         voxel_resolution: list[float] = [1.0, 1.0, 1.0],
@@ -1009,14 +999,19 @@ class Warper:
         self.verbose = verbose
         self.swc_path = swc_path
 
-        if off_sac_points is not None:
-            self.off_sac_points = self._as_xyz(off_sac_points)
-        if on_sac_points is not None:
-            self.on_sac_points = self._as_xyz(on_sac_points)
+        self.surface_points: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        if surfaces is not None:
+            for tag, data in surfaces.items():
+                self.surface_points[tag] = self._as_xyz(data)
+
+        # Legacy convenience attributes
+        if "off_sac" in self.surface_points:
+            self.off_sac_points = self.surface_points["off_sac"]
+        if "on_sac" in self.surface_points:
+            self.on_sac_points = self.surface_points["on_sac"]
 
         if swc_path is not None:
-            self.swc_path = swc_path
-            self.load_swc(swc_path)  # raw SWC → self.nodes / edges / radii
+            self.load_swc(swc_path)
         else:
             self.swc_path = None
 
@@ -1048,13 +1043,23 @@ class Warper:
             "SAC data must be a mapping with keys x/y/z or a 3‑tuple of arrays."
         )
 
+    def load_surfaces(self, surfaces: dict) -> "Warper":
+        """Load surface point clouds from a dict of tag -> data."""
+        if self.verbose:
+            print("[pywarper] Loading surface meshes …")
+        self.surface_points = {}
+        for tag, data in surfaces.items():
+            self.surface_points[tag] = self._as_xyz(data)
+        # Keep legacy attributes up to date
+        if "off_sac" in self.surface_points:
+            self.off_sac_points = self.surface_points["off_sac"]
+        if "on_sac" in self.surface_points:
+            self.on_sac_points = self.surface_points["on_sac"]
+        return self
+
     def load_sac(self, off_sac_points, on_sac_points) -> "Warper":
         """Load the SAC meshes from *off_sac_points* and *on_sac_points*."""
-        if self.verbose:
-            print("[pywarper] Loading SAC meshes …")
-        self.off_sac_points = self._as_xyz(off_sac_points)
-        self.on_sac_points = self._as_xyz(on_sac_points)
-        return self
+        return self.load_surfaces({"on_sac": on_sac_points, "off_sac": off_sac_points})
 
     def load_warped_skeleton(
         self,
@@ -1090,45 +1095,39 @@ class Warper:
         smoothness: int = 15,
         backward_compatible: bool = False,
     ) -> "Warper":
-        """Fit ON / OFF SAC meshes with *pygridfit*."""
+        """Fit all loaded surface point-clouds with *pygridfit*."""
         if self.verbose:
-            print("[pywarper] Fitting SAC surfaces …")
+            print("[pywarper] Fitting surfaces …")
+
+        if not self.surface_points:
+            raise RuntimeError("No surface point clouds loaded.")
 
         if backward_compatible is False and (xmax is None or ymax is None):
-            # use the bounding box of the skeleton
-            xmax = max(self.off_sac_points[0].max(), self.on_sac_points[0].max())
-            ymax = max(self.off_sac_points[1].max(), self.on_sac_points[1].max())
+            all_x = np.concatenate([pts[0] for pts in self.surface_points.values()])
+            all_y = np.concatenate([pts[1] for pts in self.surface_points.values()])
+            xmax = float(all_x.max())
+            ymax = float(all_y.max())
 
-        _t0 = time.time()
-        self.off_sac_surface, *_ = fit_sac_surface(
-            x=self.off_sac_points[0],
-            y=self.off_sac_points[1],
-            z=self.off_sac_points[2],
-            stride=stride,
-            smoothness=smoothness,
-            xmax=xmax,
-            ymax=ymax,
-            backward_compatible=backward_compatible,
-        )
-        if self.verbose:
-            print(
-                f"↳ fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds."
+        self.fitted_surfaces: dict[str, np.ndarray] = {}
+        for tag, (x, y, z) in self.surface_points.items():
+            _t0 = time.time()
+            surface, *_ = fit_surface(
+                x=x, y=y, z=z,
+                stride=stride,
+                smoothness=smoothness,
+                xmax=xmax, ymax=ymax,
+                backward_compatible=backward_compatible,
             )
+            self.fitted_surfaces[tag] = surface
+            if self.verbose:
+                print(f"↳ fitting '{tag}' surface\n    done in {time.time() - _t0:.2f} seconds.")
 
-        _t0 = time.time()
-        self.on_sac_surface, *_ = fit_sac_surface(
-            x=self.on_sac_points[0],
-            y=self.on_sac_points[1],
-            z=self.on_sac_points[2],
-            smoothness=smoothness,
-            xmax=xmax,
-            ymax=ymax,
-            backward_compatible=backward_compatible,
-        )
-        if self.verbose:
-            print(
-                f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds."
-            )
+        # Legacy attributes
+        if "off_sac" in self.fitted_surfaces:
+            self.off_sac_surface = self.fitted_surfaces["off_sac"]
+        if "on_sac" in self.fitted_surfaces:
+            self.on_sac_surface = self.fitted_surfaces["on_sac"]
+
         return self
 
     def build_mapping(
@@ -1138,13 +1137,11 @@ class Warper:
         n_anchors: int = 16,
         backward_compatible: bool = False,
     ) -> "Warper":
-        """Create the quasi‑conformal surface mapping."""
-        if self.off_sac_surface is None or self.on_sac_surface is None:
+        """Create the quasi-conformal surface mapping."""
+        if not hasattr(self, "fitted_surfaces") or not self.fitted_surfaces:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
 
         if bounds is None or bounds == "local":
-            # skeleton-derived box (rounded to int so it plays nicely with
-            # backward-compatible 1-based code paths)
             xmin, xmax = (
                 self.skeleton.nodes[:, 0].min(),
                 self.skeleton.nodes[:, 0].max(),
@@ -1155,22 +1152,20 @@ class Warper:
             )
             bounds = np.array([xmin, xmax, ymin, ymax], dtype=float)
         elif bounds == "global":
-            # use whichever SAC fit is larger in each axis
-            nx = max(self.on_sac_surface.shape[0], self.off_sac_surface.shape[0])
-            ny = max(self.on_sac_surface.shape[1], self.off_sac_surface.shape[1])
+            nx = max(s.shape[0] for s in self.fitted_surfaces.values())
+            ny = max(s.shape[1] for s in self.fitted_surfaces.values())
             bounds = np.array([0, nx, 0, ny], dtype=float)
         else:
             bounds = np.asarray(bounds, dtype=float)
             if bounds.shape != (4,):
                 raise ValueError(
-                    "Bounds must be a 4‑element array or tuple (x_min, x_max, y_min, y_max)."
+                    "Bounds must be a 4-element array or tuple (x_min, x_max, y_min, y_max)."
                 )
 
         if self.verbose:
             print("[pywarper] Building mapping …")
         self.mapping: dict = build_mapping(
-            self.on_sac_surface,
-            self.off_sac_surface,
+            self.fitted_surfaces,
             bounds,
             conformal_jump=conformal_jump,
             n_anchors=n_anchors,
@@ -1251,12 +1246,15 @@ class Warper:
         if self.warped_skeleton is None:
             raise RuntimeError("Warped skeleton missing. Call warp_skeleton() first.")
         else:
+            med_z = self.warped_skeleton.extra.get(
+                "med_z",
+                {"on_sac": self.warped_skeleton.extra["med_z_on"],
+                 "off_sac": self.warped_skeleton.extra["med_z_off"]},
+            )
             renormed_nodes = normalize_nodes(
                 self.warped_skeleton.extra["prenormed_nodes"],
-                med_z_on=self.warped_skeleton.extra["med_z_on"],
-                med_z_off=self.warped_skeleton.extra["med_z_off"],
-                on_sac_pos=on_sac_pos,
-                off_sac_pos=off_sac_pos,
+                med_z=med_z,
+                anchor_pos=(on_sac_pos, off_sac_pos),
             )
 
         soma_renormed = deepcopy(self.warped_skeleton.soma)
@@ -1324,11 +1322,10 @@ class Warper:
         }
 
         skel_renormed.extra = {
-            "prenormed_nodes": self.warped_skeleton.extra[
-                "prenormed_nodes"
-            ],  # keep the pre-normed warped nodes for future use
-            "med_z_on": float(self.warped_skeleton.extra["med_z_on"]),
-            "med_z_off": float(self.warped_skeleton.extra["med_z_off"]),
+            "prenormed_nodes": self.warped_skeleton.extra["prenormed_nodes"],
+            "med_z": med_z,
+            "med_z_on": float(med_z.get("on_sac", 0.0)),
+            "med_z_off": float(med_z.get("off_sac", 0.0)),
             "z_profiles": z_profiles,
             "xy_profiles": xy_profiles,
         }

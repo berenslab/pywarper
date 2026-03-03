@@ -102,22 +102,18 @@ def _test_skeleton(n_nodes: int = 60, seed: int = 11) -> Skeleton:
 def test_denormalize_nodes_inverts_normalize_nodes():
     rng = np.random.default_rng(0)
     nodes = rng.uniform(-10.0, 10.0, size=(100, 3))
-    med_z_on, med_z_off = -2.5, 21.0
+    med_z = {"on_sac": -2.5, "off_sac": 21.0}
     on_sac_pos, off_sac_pos = 0.0, 12.0
 
     normalized = normalize_nodes(
         nodes,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
+        med_z=med_z,
+        anchor_pos=(on_sac_pos, off_sac_pos),
     )
     restored = denormalize_nodes(
         normalized,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
+        med_z=med_z,
+        anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
     assert np.allclose(restored, nodes, rtol=1e-12, atol=1e-12)
@@ -132,13 +128,11 @@ def test_unwarp_nodes_roundtrip_with_identity_surface_mapping():
     nodes[:, 1] = rng.uniform(6.0, 18.0, size=200)
     nodes[:, 2] = rng.uniform(0.0, 10.0, size=200)
 
-    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    warped, med_z = warp_nodes(nodes, mapping)
     normalized = normalize_nodes(
         warped,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=0.0,
-        off_sac_pos=12.0,
+        med_z=med_z,
+        anchor_pos=(0.0, 12.0),
     )
 
     recovered = unwarp_nodes(
@@ -158,16 +152,14 @@ def test_unwarp_nodes_can_infer_median_depths_from_mapping():
     nodes[:, 1] = rng.uniform(6.0, 18.0, size=80)
     nodes[:, 2] = rng.uniform(0.0, 10.0, size=80)
 
-    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    warped, med_z = warp_nodes(nodes, mapping)
     normalized = normalize_nodes(
         warped,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=0.0,
-        off_sac_pos=12.0,
+        med_z=med_z,
+        anchor_pos=(0.0, 12.0),
     )
 
-    # med_z_on / med_z_off omitted: inferred from surface_mapping.
+    # med_z inferred from surface_mapping.
     recovered = unwarp_nodes(
         normalized,
         mapping,
@@ -185,14 +177,12 @@ def test_unwarp_nodes_supports_custom_sac_positions():
     nodes[:, 1] = rng.uniform(6.0, 18.0, size=120)
     nodes[:, 2] = rng.uniform(0.0, 10.0, size=120)
 
-    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    warped, med_z = warp_nodes(nodes, mapping)
     on_sac_pos, off_sac_pos = -3.0, 21.5
     normalized = normalize_nodes(
         warped,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
+        med_z=med_z,
+        anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
     recovered_local = unwarp_nodes(
@@ -225,13 +215,11 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
     # allow points far beyond ON/OFF layer z to match annotation use-cases
     nodes[:, 2] = rng.uniform(-120.0, 180.0, size=80)
 
-    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    warped, med_z = warp_nodes(nodes, mapping)
     normalized = normalize_nodes(
         warped,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=0.0,
-        off_sac_pos=12.0,
+        med_z=med_z,
+        anchor_pos=(0.0, 12.0),
     )
 
     recovered_local = unwarp_nodes(
@@ -253,13 +241,11 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
     assert opt_err.mean() < local_err.mean() * 1e-3
     assert np.quantile(opt_err, 0.95) < 1e-6
 
-    rewarped_opt, _, _ = warp_nodes(recovered_opt, mapping)
+    rewarped_opt, _ = warp_nodes(recovered_opt, mapping)
     renorm_opt = normalize_nodes(
         rewarped_opt,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=0.0,
-        off_sac_pos=12.0,
+        med_z=med_z,
+        anchor_pos=(0.0, 12.0),
     )
     assert np.allclose(renorm_opt, normalized, rtol=1e-8, atol=1e-8)
 
@@ -267,13 +253,11 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
 def test_unwarp_nodes_optimize_invalid_params_raise():
     mapping = _identity_surface_mapping()
     nodes = np.array([[10.0, 10.0, 5.0]], dtype=float)
-    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    warped, med_z = warp_nodes(nodes, mapping)
     normalized = normalize_nodes(
         warped,
-        med_z_on=med_z_on,
-        med_z_off=med_z_off,
-        on_sac_pos=0.0,
-        off_sac_pos=12.0,
+        med_z=med_z,
+        anchor_pos=(0.0, 12.0),
     )
 
     with pytest.raises(ValueError, match="max_evals_per_point"):

@@ -19,72 +19,116 @@ def resolve_conformal_jump(
     return int(conformal_jump)
 
 
+def _convert_legacy_mapping(mapping: dict) -> dict:
+    """
+    Convert an old-format surface mapping dict (with ``mapped_on``/``mapped_off``
+    keys) to the new multi-surface format.
+
+    The new format uses:
+    - ``surfaces``: dict mapping tag -> height map
+    - ``mapped_surfaces``: dict mapping tag -> (N, 2) flattened coordinates
+    - ``surface_order``: list of tags sorted by median depth
+
+    Old-format keys are preserved so that downstream code that checks for them
+    (e.g. cached .npz consumers) still works.
+    """
+    out = dict(mapping)  # shallow copy
+
+    on_surface = np.asarray(mapping["on_sac_surface"], dtype=float)
+    off_surface = np.asarray(mapping["off_sac_surface"], dtype=float)
+    mapped_on = np.asarray(mapping["mapped_on"], dtype=float)
+    mapped_off = np.asarray(mapping["mapped_off"], dtype=float)
+
+    out["surfaces"] = {"on_sac": on_surface, "off_sac": off_surface}
+    out["mapped_surfaces"] = {"on_sac": mapped_on, "off_sac": mapped_off}
+    out["surface_order"] = ["on_sac", "off_sac"]
+
+    return out
+
+
+def _ensure_new_format(mapping: dict) -> dict:
+    """Return *mapping* in the new multi-surface format, converting if needed."""
+    if "mapped_surfaces" not in mapping and "mapped_on" in mapping:
+        return _convert_legacy_mapping(mapping)
+    return mapping
+
+
+def load_surface_mapping(path: str) -> dict:
+    """Load a surface mapping from .npz, auto-converting legacy format."""
+    data = dict(np.load(path, allow_pickle=True))
+    return _ensure_new_format(data)
+
+
 def build_surface_correspondences(
     surface_mapping: dict,
     *,
     conformal_jump: int,
     backward_compatible: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float]:
+) -> tuple[list[np.ndarray], list[np.ndarray], dict[str, float]]:
     """
     Build paired control points for local LS registration.
 
     Returns
     -------
-    on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off
+    input_pts_list : list of (K, 3) arrays, one per surface (depth-ordered)
+    output_pts_list : list of (K, 3) arrays, one per surface (depth-ordered)
+    med_z : dict mapping tag -> median z
     """
-    mapped_on = np.asarray(surface_mapping["mapped_on"], dtype=float)
-    mapped_off = np.asarray(surface_mapping["mapped_off"], dtype=float)
-    on_sac_surface = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
-    off_sac_surface = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
+    mapping = _ensure_new_format(surface_mapping)
+
+    surfaces = mapping["surfaces"]
+    mapped_surfaces = mapping["mapped_surfaces"]
+    surface_order = mapping["surface_order"]
 
     if backward_compatible:
-        sampled_x_idx = np.asarray(surface_mapping["sampled_x_idx"], dtype=int) + 1
-        sampled_y_idx = np.asarray(surface_mapping["sampled_y_idx"], dtype=int) + 1
+        sampled_x_idx = np.asarray(mapping["sampled_x_idx"], dtype=int) + 1
+        sampled_y_idx = np.asarray(mapping["sampled_y_idx"], dtype=int) + 1
     else:
-        sampled_x_idx = np.asarray(surface_mapping["sampled_x_idx"], dtype=int)
-        sampled_y_idx = np.asarray(surface_mapping["sampled_y_idx"], dtype=int)
+        sampled_x_idx = np.asarray(mapping["sampled_x_idx"], dtype=int)
+        sampled_y_idx = np.asarray(mapping["sampled_y_idx"], dtype=int)
 
     x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
     y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
     xmesh, ymesh = np.meshgrid(x_vals, y_vals, indexing="ij")
 
-    if backward_compatible:
-        on_subsampled_depths = on_sac_surface[x_vals[:, None] - 1, y_vals - 1]
-        off_subsampled_depths = off_sac_surface[x_vals[:, None] - 1, y_vals - 1]
-    else:
-        on_subsampled_depths = on_sac_surface[x_vals[:, None], y_vals]
-        off_subsampled_depths = off_sac_surface[x_vals[:, None], y_vals]
-
     expected = xmesh.size
-    if mapped_on.shape[0] != expected or mapped_off.shape[0] != expected:
-        raise ValueError(
-            "Surface mapping size mismatch: mapped_on/mapped_off do not match sampled grid."
+
+    input_pts_list = []
+    output_pts_list = []
+    med_z = {}
+
+    for tag in surface_order:
+        surface = np.asarray(surfaces[tag], dtype=float)
+        mapped = np.asarray(mapped_surfaces[tag], dtype=float)
+
+        if mapped.shape[0] != expected:
+            raise ValueError(
+                f"Surface mapping size mismatch: mapped_surfaces['{tag}'] does not match sampled grid."
+            )
+
+        if backward_compatible:
+            subsampled_depths = surface[x_vals[:, None] - 1, y_vals - 1]
+        else:
+            subsampled_depths = surface[x_vals[:, None], y_vals]
+
+        med_z_val = float(np.median(subsampled_depths))
+        med_z[tag] = med_z_val
+
+        input_pts = np.column_stack(
+            [
+                xmesh.ravel(order="F"),
+                ymesh.ravel(order="F"),
+                subsampled_depths.ravel(order="F"),
+            ]
+        )
+        output_pts = np.column_stack(
+            [mapped[:, 0], mapped[:, 1], np.full(mapped.shape[0], med_z_val)]
         )
 
-    med_z_on = float(np.median(on_subsampled_depths))
-    med_z_off = float(np.median(off_subsampled_depths))
+        input_pts_list.append(input_pts)
+        output_pts_list.append(output_pts)
 
-    on_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            on_subsampled_depths.ravel(order="F"),
-        ]
-    )
-    off_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            off_subsampled_depths.ravel(order="F"),
-        ]
-    )
-    on_output_pts = np.column_stack(
-        [mapped_on[:, 0], mapped_on[:, 1], np.full(mapped_on.shape[0], med_z_on)]
-    )
-    off_output_pts = np.column_stack(
-        [mapped_off[:, 0], mapped_off[:, 1], np.full(mapped_off.shape[0], med_z_off)]
-    )
-    return on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off
+    return input_pts_list, output_pts_list, med_z
 
 
 def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarray]:
@@ -112,9 +156,9 @@ def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarr
         dtype=np.float64,
     )
 
-    x = data[:, 0] + 1          # KNOSSOS X  → +1 for MATLAB convention
+    x = data[:, 0] + 1          # KNOSSOS X  -> +1 for MATLAB convention
     y = data[:, 1]              # Slice (already 1-based)
-    z = data[:, 2] + 1          # KNOSSOS Y  → +1
+    z = data[:, 2] + 1          # KNOSSOS Y  -> +1
 
     if unit == "voxel":
         return {"x": x, "y": y, "z": z}

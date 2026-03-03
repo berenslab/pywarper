@@ -18,10 +18,13 @@ from .warpers import (
 
 def denormalize_nodes(
     nodes: np.ndarray,
-    med_z_on: float,
-    med_z_off: float,
-    on_sac_pos: float = 0.0,
-    off_sac_pos: float = 12.0,
+    med_z: dict[str, float] | float,
+    anchors: tuple[str, str] = ("on_sac", "off_sac"),
+    anchor_pos: tuple[float, float] = (0.0, 12.0),
+    *,
+    med_z_off: float | None = None,
+    on_sac_pos: float | None = None,
+    off_sac_pos: float | None = None,
 ) -> np.ndarray:
     """
     Undo `normalize_nodes` and map z back to the pre-normalized warped frame.
@@ -30,14 +33,18 @@ def denormalize_nodes(
     ----------
     nodes : np.ndarray
         (N, 3) normalized [x, y, z] coordinates.
-    med_z_on : float
-        Median z-value of the ON SAC surface used during warping.
-    med_z_off : float
-        Median z-value of the OFF SAC surface used during warping.
-    on_sac_pos : float, default=0.0
-        ON surface position used in normalized space.
-    off_sac_pos : float, default=12.0
-        OFF surface position used in normalized space.
+    med_z : dict[str, float] or float
+        If dict: mapping of surface tag -> median z.
+        If float: legacy usage where this is ``med_z_on`` and *med_z_off*
+        must also be supplied.
+    anchors : tuple[str, str]
+        Tags of the two anchor surfaces.
+    anchor_pos : tuple[float, float]
+        Normalized positions for the two anchors.
+    med_z_off : float | None
+        Legacy keyword.
+    on_sac_pos, off_sac_pos : float | None
+        Legacy keywords that override *anchor_pos*.
 
     Returns
     -------
@@ -47,12 +54,29 @@ def denormalize_nodes(
     nodes = np.asarray(nodes, dtype=float)
     if nodes.ndim != 2 or nodes.shape[1] != 3:
         raise ValueError("nodes must be an (N, 3) array.")
-    if np.isclose(off_sac_pos, on_sac_pos):
-        raise ValueError("off_sac_pos and on_sac_pos must be different values.")
+
+    # ---- resolve legacy call convention ------------------------------------
+    if isinstance(med_z, (int, float)):
+        if med_z_off is None:
+            raise ValueError("med_z_off must be provided when med_z is a scalar (legacy API).")
+        med_z_dict: dict[str, float] = {"on_sac": float(med_z), "off_sac": float(med_z_off)}
+    else:
+        med_z_dict = med_z
+
+    if on_sac_pos is not None:
+        anchor_pos = (on_sac_pos, anchor_pos[1] if off_sac_pos is None else off_sac_pos)
+    if off_sac_pos is not None and on_sac_pos is None:
+        anchor_pos = (anchor_pos[0], off_sac_pos)
+
+    if np.isclose(anchor_pos[1], anchor_pos[0]):
+        raise ValueError("anchor positions must be different values.")
+
+    z_a = med_z_dict[anchors[0]]
+    z_b = med_z_dict[anchors[1]]
 
     denormalized_nodes = nodes.copy()
-    rel_depth = (nodes[:, 2] - on_sac_pos) / (off_sac_pos - on_sac_pos)
-    denormalized_nodes[:, 2] = med_z_on + rel_depth * (med_z_off - med_z_on)
+    rel_depth = (nodes[:, 2] - anchor_pos[0]) / (anchor_pos[1] - anchor_pos[0])
+    denormalized_nodes[:, 2] = z_a + rel_depth * (z_b - z_a)
     return denormalized_nodes
 
 
@@ -64,29 +88,25 @@ def _prepare_unwarp_inputs(
     off_sac_pos: float,
     conformal_jump: int | None,
     backward_compatible: bool,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, list[np.ndarray], list[np.ndarray]]:
     points = np.asarray(nodes, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("nodes must be an (N, 3) array.")
 
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    on_input_pts, off_input_pts, on_output_pts, off_output_pts, map_med_z_on, map_med_z_off = (
-        build_surface_correspondences(
-            surface_mapping,
-            conformal_jump=resolved_jump,
-            backward_compatible=backward_compatible,
-        )
+    input_pts_list, output_pts_list, med_z = build_surface_correspondences(
+        surface_mapping,
+        conformal_jump=resolved_jump,
+        backward_compatible=backward_compatible,
     )
 
     prenormed_nodes = denormalize_nodes(
         points,
-        med_z_on=map_med_z_on,
-        med_z_off=map_med_z_off,
-        on_sac_pos=on_sac_pos,
-        off_sac_pos=off_sac_pos,
+        med_z=med_z,
+        anchor_pos=(on_sac_pos, off_sac_pos),
     )
 
-    return prenormed_nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
+    return prenormed_nodes, input_pts_list, output_pts_list
 
 
 def unwarp_nodes(
@@ -112,25 +132,21 @@ def unwarp_nodes(
     Input nodes are assumed to be normalized warped coordinates and are
     denormalized using the provided ON/OFF SAC reference positions.
     """
-    prenormed_nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts = (
-        _prepare_unwarp_inputs(
-            nodes,
-            surface_mapping,
-            on_sac_pos=on_sac_pos,
-            off_sac_pos=off_sac_pos,
-            conformal_jump=conformal_jump,
-            backward_compatible=backward_compatible,
-        )
+    prenormed_nodes, input_pts_list, output_pts_list = _prepare_unwarp_inputs(
+        nodes,
+        surface_mapping,
+        on_sac_pos=on_sac_pos,
+        off_sac_pos=off_sac_pos,
+        conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
     )
 
     if method == "local_ls":
         # Inverse pass: swap forward correspondences (flattened -> curved frame).
         return local_ls_registration(
             prenormed_nodes,
-            on_output_pts,
-            off_output_pts,
-            on_input_pts,
-            off_input_pts,
+            output_pts_list,
+            input_pts_list,
         )
 
     if method != "optimize":
@@ -143,29 +159,26 @@ def unwarp_nodes(
 
     # Start from the fast approximate inverse and refine against the forward model.
     inverse_state = _build_local_ls_state(
-        on_output_pts,
-        off_output_pts,
-        on_input_pts,
-        off_input_pts,
+        output_pts_list,
+        input_pts_list,
         window=5.0,
         max_order=2,
     )
     initial = _apply_local_ls_state(prenormed_nodes, inverse_state, warn=False)
 
     forward_state = _build_local_ls_state(
-        on_input_pts,
-        off_input_pts,
-        on_output_pts,
-        off_output_pts,
+        input_pts_list,
+        output_pts_list,
         window=5.0,
         max_order=2,
     )
 
     if bound_xy_to_map:
-        x_min = float(min(on_input_pts[:, 0].min(), off_input_pts[:, 0].min()))
-        x_max = float(max(on_input_pts[:, 0].max(), off_input_pts[:, 0].max()))
-        y_min = float(min(on_input_pts[:, 1].min(), off_input_pts[:, 1].min()))
-        y_max = float(max(on_input_pts[:, 1].max(), off_input_pts[:, 1].max()))
+        all_input = np.vstack(input_pts_list)
+        x_min = float(all_input[:, 0].min())
+        x_max = float(all_input[:, 0].max())
+        y_min = float(all_input[:, 1].min())
+        y_max = float(all_input[:, 1].max())
         lower_bounds = np.array([x_min, y_min, -np.inf], dtype=float)
         upper_bounds = np.array([x_max, y_max, np.inf], dtype=float)
     else:

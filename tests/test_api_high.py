@@ -29,7 +29,10 @@ def test_warper():
     cell_path = "./tests/data/Image013-009_01_raw_latest_Uygar.swc"
     voxel_resolution = [0.4, 0.4, 0.5]
     w = Warper(
-        off_sac, on_sac, cell_path, voxel_resolution=voxel_resolution, verbose=False
+        {"off_sac": off_sac, "on_sac": on_sac},
+        cell_path,
+        voxel_resolution=voxel_resolution,
+        verbose=False,
     )
     w.skeleton.nodes += 1  # unnecessary, but to match the matlab behavior
     w.fit_surfaces(backward_compatible=True)

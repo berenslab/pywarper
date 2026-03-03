@@ -2,7 +2,7 @@ import numpy as np
 import scipy.io
 import skeliner as sk
 
-from pywarper.surface import build_mapping, fit_sac_surface
+from pywarper.surface import build_mapping, fit_surface
 from pywarper.utils import read_sumbul_et_al_chat_bands
 from pywarper.warpers import warp_skeleton
 
@@ -31,14 +31,14 @@ def test_skeleton():
     skel = sk.io.load_swc("./tests/data/Image013-009_01_raw_latest_Uygar.swc")
     skel.nodes += 1  # to match MATLAB indexing (1-based)
 
-    off_sac_surface, _, _ = fit_sac_surface(
+    off_sac_surface, _, _ = fit_surface(
         x=off_sac["x"],
         y=off_sac["y"],
         z=off_sac["z"],
         smoothness=15,
         backward_compatible=True,
     )
-    on_sac_surface, _, _ = fit_sac_surface(
+    on_sac_surface, _, _ = fit_surface(
         x=on_sac["x"],
         y=on_sac["y"],
         z=on_sac["z"],
@@ -54,8 +54,7 @@ def test_skeleton():
         ]
     )
     surface_mapping = build_mapping(
-        on_sac_surface,
-        off_sac_surface,
+        {"on_sac": on_sac_surface, "off_sac": off_sac_surface},
         skeleton_boundaries,
         conformal_jump=2,
         n_anchors=4,

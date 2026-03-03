@@ -5,7 +5,7 @@ Numerical utilities for **flattening the Starburst Amacrine Cell (SAC) layers** 
 
 Given two depth maps—one for the ON SAC band and one for the OFF SAC band—this module performs
 
-1. **Surface fitting** (`fit_sac_surface`) – smooths scattered ChAT-band samples or arbor node coordinates
+1. **Surface fitting** (`fit_surface`) – smooths scattered ChAT-band samples or arbor node coordinates
    into regular height-fields using *PyGridFit*.
 2. **Uniform resampling** (`resample_zgrid`) – converts the irregular fit to a unit-spaced integer grid,
    matching MATLAB’s historical conventions.
@@ -48,7 +48,7 @@ from importlib import metadata as _metadata
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
 
-def fit_sac_surface(
+def fit_surface(
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
@@ -545,32 +545,31 @@ def conformal_map_indep_fixed_diagonals(
     return mappedPositions
 
 
-def align_mapped_surface(    
-    thisVZminmesh: np.ndarray,
-    thisVZmaxmesh: np.ndarray,
-    mappedMinPositions: np.ndarray,
-    mappedMaxPositions: np.ndarray,
+def align_mapped_surface(
+    ref_surface: np.ndarray,
+    target_surface: np.ndarray,
+    ref_mapped: np.ndarray,
+    target_mapped: np.ndarray,
     xborders: list[int],
     yborders: list[int],
     conformal_jump: int = 1,
     patch_size: int = 21
 ) -> np.ndarray:
     """
-    Shifts the second mapped surface (mappedMaxPositions) so that its local
-    gradients align best with those of the first (mappedMinPositions).
+    Shifts *target_mapped* so that its local gradients align best with
+    those of *ref_mapped*.
 
     Parameters
     ----------
-    thisVZminmesh : np.ndarray
-        2D array of shape (X, Y), representing the first (minimum) surface.
-    thisVZmaxmesh : np.ndarray
-        2D array of shape (X, Y), representing the second (maximum) surface.
-    mappedMinPositions : np.ndarray
-        2D array of shape (X*Y, 2), the conformally mapped coordinates 
-        corresponding to the min surface.
-    mappedMaxPositions : np.ndarray
-        2D array of shape (X*Y, 2), the conformally mapped coordinates 
-        corresponding to the max surface.
+    ref_surface : np.ndarray
+        2D height map (X, Y) of the reference surface.
+    target_surface : np.ndarray
+        2D height map (X, Y) of the surface to shift.
+    ref_mapped : np.ndarray
+        (X*Y, 2) conformally mapped coordinates for the reference surface.
+    target_mapped : np.ndarray
+        (X*Y, 2) conformally mapped coordinates for the target surface
+        (will be shifted in-place).
     xborders : list of int
         [x_min, x_max] bounding indices used to focus the alignment region.
     yborders : list of int
@@ -582,203 +581,197 @@ def align_mapped_surface(
 
     Returns
     -------
-    mappedMaxPositions : np.ndarray
-        Updated 2D array of shape (X*Y, 2) for the max surface, 
-        after alignment to the min surface.
-
-    Notes
-    -----
-    This step finds an offset (shift in x and y) that best aligns local slope
-    features from the two surfaces, by comparing gradients in a restricted region 
-    and choosing the position with minimal combined gradient magnitude.
+    target_mapped : np.ndarray
+        Updated (X*Y, 2) for the target surface, after alignment.
     """
     patch_size = int(np.ceil(patch_size / conformal_jump))
 
     # Pad surfaces to preserve shape after differencing
-    pad_val_min = 10 * np.max(thisVZminmesh)
-    pad_val_max = 10 * np.max(thisVZmaxmesh)
+    pad_val_ref = 10 * np.max(ref_surface)
+    pad_val_tgt = 10 * np.max(target_surface)
 
-    VZminmesh_padded = np.pad(thisVZminmesh, ((0, 1), (0, 1)), constant_values=pad_val_min)
-    VZmaxmesh_padded = np.pad(thisVZmaxmesh, ((0, 1), (0, 1)), constant_values=pad_val_max)
+    ref_padded = np.pad(ref_surface, ((0, 1), (0, 1)), constant_values=pad_val_ref)
+    tgt_padded = np.pad(target_surface, ((0, 1), (0, 1)), constant_values=pad_val_tgt)
 
     # Gradient differences (dx + i*dy)
-    dmin_dx = np.diff(VZminmesh_padded, axis=0)[:, :-1]
-    dmin_dy = np.diff(VZminmesh_padded, axis=1)[:-1, :]
-    dMinSurface = np.abs(dmin_dx + 1j * dmin_dy)
+    dref_dx = np.diff(ref_padded, axis=0)[:, :-1]
+    dref_dy = np.diff(ref_padded, axis=1)[:-1, :]
+    dRefSurface = np.abs(dref_dx + 1j * dref_dy)
 
-    dmax_dx = np.diff(VZmaxmesh_padded, axis=0)[:, :-1]
-    dmax_dy = np.diff(VZmaxmesh_padded, axis=1)[:-1, :]
-    dMaxSurface = np.abs(dmax_dx + 1j * dmax_dy)
+    dtgt_dx = np.diff(tgt_padded, axis=0)[:, :-1]
+    dtgt_dy = np.diff(tgt_padded, axis=1)[:-1, :]
+    dTgtSurface = np.abs(dtgt_dx + 1j * dtgt_dy)
 
     # Region of interest
     x1, x2 = xborders
     y1, y2 = yborders
 
-    dMinSurface_roi = dMinSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
-    dMaxSurface_roi = dMaxSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
+    dRefSurface_roi = dRefSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
+    dTgtSurface_roi = dTgtSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
 
-    combined_slope = dMinSurface_roi + dMaxSurface_roi
+    combined_slope = dRefSurface_roi + dTgtSurface_roi
 
     # Patch cost = sum of local gradients over patch
     kernel = np.ones((patch_size, patch_size))
     patch_costs = convolve2d(combined_slope, kernel, mode='valid')
 
-    # # Map back to flattened index in 2D mesh
-    # row, col are 0-based from Python
-    # Convert them to 1-based to mimic MATLAB
     min_index = np.argmin(patch_costs)
     row0, col0 = np.unravel_index(min_index, patch_costs.shape)
-    # (row0, col0) is 0-based, which correspond to x,y in MATLAB if the array shape is (num_x, num_y).
 
-    # Now replicate the step:
-    #   row = round(row + (patchSize - 1)/2)
-    #   col = round(col + (patchSize - 1)/2)
     row_center_0b = int(round(row0 + (patch_size - 1) / 2))
     col_center_0b = int(round(col0 + (patch_size - 1) / 2))
 
-    # Now we want the same linear index that MATLAB would get from
-    # sub2ind([num_x, num_y], row_center, col_center),
-    # except sub2ind is 1-based. In 0-based form, that is:
-    #   linearInd = col_center_0b * num_x + row_center_0b
-    flat_index = col_center_0b * dMinSurface_roi.shape[0] + row_center_0b
+    flat_index = col_center_0b * dRefSurface_roi.shape[0] + row_center_0b
 
     # Then do the shift
-    shift_x = mappedMaxPositions[flat_index, 0] - mappedMinPositions[flat_index, 0]
-    shift_y = mappedMaxPositions[flat_index, 1] - mappedMinPositions[flat_index, 1]
+    shift_x = target_mapped[flat_index, 0] - ref_mapped[flat_index, 0]
+    shift_y = target_mapped[flat_index, 1] - ref_mapped[flat_index, 1]
 
-    mappedMaxPositions[:, 0] -= shift_x
-    mappedMaxPositions[:, 1] -= shift_y
+    target_mapped[:, 0] -= shift_x
+    target_mapped[:, 1] -= shift_y
 
-    return mappedMaxPositions
+    return target_mapped
 
 
 def build_mapping(
-    on_sac_surface: np.ndarray, # original `thisVZminmesh`  (ON‑Starburst layer)
-    off_sac_surface: np.ndarray, # original `thisVZmaxmesh`  (OFF‑Starburst layer)
-    bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
-    conformal_jump: int = 1, # original `conformalJump`
-    n_anchors: int = 16, # number of anchor points for conformal mapping, options: 4, 8 or 16
-    alignment_patch_size: int = 21,  # size of the local patch for alignment
+    surfaces: dict[str, np.ndarray],
+    bounds: np.ndarray | tuple[int, int, int, int],
+    conformal_jump: int = 1,
+    n_anchors: int = 16,
+    alignment_patch_size: int = 21,
     *,
     verbose: bool = False,
-    backward_compatible: bool = False  # for MATLAB compatibility
+    backward_compatible: bool = False,
 ) -> dict:
     """
-    Create a 2D conformal map that **flattens** the ON‑ and OFF‑Starburst Amacrine Cell (SAC) 
-    layers onto a common plane so their geometry can later be imposed on retinal arbors.
-
-    This is a refactored port of MATLAB **`calcWarpedSACsurfaces`**.  
-    The mathematics and return values are preserved exactly; only names and documentation are clearer.
-
-    Workflow
-    --------
-    1. **Subsample** both SAC height‑fields within `bounds` at every `conformal_jump` pixels.
-    2. Measure the true 3D lengths of the main and skew diagonals on each subsampled surface.
-    3. **Conformally map** the ON and OFF surfaces independently so those diagonals become straight with the measured lengths.
-    4. **Align** the OFF map to the ON map by finding the x/y shift that minimises local slope mismatches.
-    5. Return the two mapped coordinate sets plus diagnostic metadata.
+    Create a 2D conformal map that **flattens** N tagged depth surfaces onto
+    a common plane.
 
     Parameters
     ----------
-    on_sac_surface : np.ndarray
-        Height map of the ON ("minimum") SAC layer, shape *(X, Y).*  (Formerly `thisVZminmesh`).
-    off_sac_surface : np.ndarray
-        Height map of the OFF ("maximum") SAC layer, shape *(X, Y).*  (Formerly `thisVZmaxmesh`).
+    surfaces : dict[str, np.ndarray] | None
+        Mapping of tag -> (X, Y) height map.  Surfaces are auto-sorted by
+        median depth (shallowest first).
     bounds : tuple[int, int, int, int] | np.ndarray
-        *(xmin, xmax, ymin, ymax)* bounds of the region that actually contains the arbor.  (Formerly `arborBoundaries`).
+        *(xmin, xmax, ymin, ymax)* bounds of the region of interest.
     conformal_jump : int, default 1
-        Sub‑sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
+        Sub-sampling stride.
     n_anchors : int, default 16
-        Number of anchor points used for the conformal mapping.
-        Options are 4, 8 (default), or 16 anchors:
-            - 4   → original behaviour (two separate solves, then average)  
-            - 8   → add horizontal/vertical mid-lines (single solve)  
-            - 16  → also add the quarter-lines (single solve)
+        Number of anchor points for the conformal mapping (4, 8, or 16).
+    alignment_patch_size : int, default 21
+        Patch size for surface alignment.
+    on_sac_surface : np.ndarray | None
+        LEGACY keyword-only. If *surfaces* is None, this and *off_sac_surface*
+        are used to construct ``surfaces = {"on_sac": ..., "off_sac": ...}``.
+    off_sac_surface : np.ndarray | None
+        LEGACY keyword-only. See *on_sac_surface*.
     verbose : bool, default False
-        If *True*, print timing information.
+        Print timing info.
+    backward_compatible : bool, default False
+        Use MATLAB-compatible indexing.
 
     Returns
     -------
     dict
-        ``mapped_on``
-            *(N × 2)* xy coordinates of each sampled vertex on the flattened ON surface.
-        ``mapped_off``
-            Same for the OFF surface **after alignment**.
-        ``main_diag_dist`` / ``skew_diag_dist``
-            Mean physical lengths of the main and skew diagonals used as conformal constraints.
-        ``sampled_x_idx`` / ``sampled_y_idx``
-            The x‑ and y‑indices that were actually sampled and mapped.
-        ``on_sac_surface`` / ``off_sac_surface``
-            The original (subsampled) height fields kept for debugging or visualisation.
+        New-format mapping with keys: ``surfaces``, ``mapped_surfaces``,
+        ``surface_order``, ``main_diag_dist``, ``skew_diag_dist``,
+        ``sampled_x_idx``, ``sampled_y_idx``, ``n_anchors``,
+        ``conformal_jump``, ``meta``.
+        Legacy keys ``mapped_on``, ``mapped_off``, ``on_sac_surface``,
+        ``off_sac_surface`` are also included for backward compatibility.
     """
+    # ---- validate inputs -----------------------------------------------------
+    if not surfaces:
+        raise ValueError("surfaces dict must be provided and non-empty.")
 
+    # ---- auto-sort surfaces by median depth --------------------------------
+    med_depths = {tag: float(np.nanmedian(s)) for tag, s in surfaces.items()}
+    surface_order = sorted(med_depths, key=lambda t: med_depths[t])
+    surfaces = {tag: surfaces[tag] for tag in surface_order}
+
+    # ---- subsample ----------------------------------------------------------
     if backward_compatible:
-        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1 # Convert to 0-based indexing
+        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1
     else:
         xmin, xmax, ymin, ymax = np.asarray(bounds)
 
-    nx, ny = off_sac_surface.shape
-    sampled_x_idx = np.arange(max(xmin - 1, 0),  min(xmax + 1, nx - 1) + 1,
-                    conformal_jump, dtype=int)
-    sampled_y_idx = np.arange(max(ymin - 1, 0),  min(ymax + 1, ny - 1) + 1,
-                    conformal_jump, dtype=int)
+    # Use the first surface shape for bounds; all should be the same shape
+    first_surface = next(iter(surfaces.values()))
+    nx, ny = first_surface.shape
+    sampled_x_idx = np.arange(max(xmin - 1, 0), min(xmax + 1, nx - 1) + 1,
+                              conformal_jump, dtype=int)
+    sampled_y_idx = np.arange(max(ymin - 1, 0), min(ymax + 1, ny - 1) + 1,
+                              conformal_jump, dtype=int)
 
-    # probably not necessary but better ensure that sampled_x_idx, sampled_y_idx are within bounds
-    sampled_x_idx = sampled_x_idx[(sampled_x_idx >= 0) & (sampled_x_idx < on_sac_surface.shape[0])]
-    sampled_y_idx = sampled_y_idx[(sampled_y_idx >= 0) & (sampled_y_idx < on_sac_surface.shape[1])]
+    # ensure within bounds of all surfaces
+    for tag, s in surfaces.items():
+        sampled_x_idx = sampled_x_idx[(sampled_x_idx >= 0) & (sampled_x_idx < s.shape[0])]
+        sampled_y_idx = sampled_y_idx[(sampled_y_idx >= 0) & (sampled_y_idx < s.shape[1])]
 
-    on_subsampled  =  on_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
-    off_subsampled = off_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
+    # ---- subsample each surface --------------------------------------------
+    subsampled = {}
+    for tag, s in surfaces.items():
+        subsampled[tag] = s[np.ix_(sampled_x_idx, sampled_y_idx)]
 
-    # calculate the traveling distances on the diagonals of the two SAC surfaces
-    start_time = time.time()
-    main_diag_dist_on, skew_diag_dist_on = calculate_diag_length(sampled_x_idx, sampled_y_idx, on_subsampled)
-    main_diag_dist_off, skew_diag_dist_off = calculate_diag_length(sampled_x_idx, sampled_y_idx, off_subsampled)
+    # ---- diagonal distances (average across all surfaces) ------------------
+    all_main = []
+    all_skew = []
+    for tag in surface_order:
+        m, s = calculate_diag_length(sampled_x_idx, sampled_y_idx, subsampled[tag])
+        all_main.append(m)
+        all_skew.append(s)
+    main_diag_dist = float(np.mean(all_main))
+    skew_diag_dist = float(np.mean(all_skew))
 
-    main_diag_dist = np.mean([main_diag_dist_on, main_diag_dist_off])
-    skew_diag_dist = np.mean([skew_diag_dist_on, skew_diag_dist_off])
+    # ---- conformal map each surface independently --------------------------
+    mapped_surfaces: dict[str, np.ndarray] = {}
+    for tag in surface_order:
+        if verbose:
+            print(f"↳ mapping '{tag}' surface …")
+            _t0 = time.time()
+        mapped_surfaces[tag] = conformal_map_indep_fixed_diagonals(
+            main_diag_dist, skew_diag_dist,
+            sampled_x_idx, sampled_y_idx, subsampled[tag],
+            n_anchors=n_anchors, backward_compatible=backward_compatible,
+        )
+        if verbose:
+            print(f"    done in {time.time() - _t0:.2f} seconds.")
 
-    # quasi-conformally map individual SAC surfaces to planes
-    if verbose:
-        print("↳ mapping ON (min) surface …")    
-        start_time = time.time()
-    mapped_on = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled,
-        n_anchors=n_anchors, backward_compatible=backward_compatible,
-    )
-    if verbose:
-        print(f"    done in {time.time() - start_time:.2f} seconds.")
+    # ---- align all surfaces to the first (shallowest) ----------------------
+    x_limits = [sampled_x_idx.min(), sampled_x_idx.max()]
+    y_limits = [sampled_y_idx.min(), sampled_y_idx.max()]
 
-    if verbose:
-        print("↳ mapping OFF (max) surface …")
-        start_time = time.time()
-    mapped_off = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled,
-        n_anchors=n_anchors, backward_compatible=backward_compatible,
-    )
-    if verbose:
-        print(f"    done in {time.time() - start_time:.2f} seconds.")
+    ref_tag = surface_order[0]
+    for tag in surface_order[1:]:
+        mapped_surfaces[tag] = align_mapped_surface(
+            surfaces[ref_tag], surfaces[tag],
+            mapped_surfaces[ref_tag], mapped_surfaces[tag],
+            x_limits, y_limits, conformal_jump, alignment_patch_size,
+        )
 
-    x_limits = [sampled_x_idx.min(), sampled_x_idx.max()]  # original `xborders`
-    y_limits = [sampled_y_idx.min(), sampled_y_idx.max()]  # original `yborders`
-
-    # Align OFF map to ON map (patch matching)
-    map_off_aligned = align_mapped_surface(
-        on_sac_surface, off_sac_surface,
-        mapped_on, mapped_off,
-        x_limits, y_limits, conformal_jump, alignment_patch_size
-    )
-
-    return {
-        "mapped_on": mapped_on,  # formerly `mappedMinPositions`
-        "mapped_off": map_off_aligned, # formerly `mappedMaxPositions`
-        "main_diag_dist": main_diag_dist, # same as MATLAB `mainDiagDist`
-        "skew_diag_dist": skew_diag_dist, # same as MATLAB `skewDiagDist`
-        "sampled_x_idx": sampled_x_idx, # formerly `thisx`
-        "sampled_y_idx": sampled_y_idx, # formerly `thisy`
-        "on_sac_surface": on_sac_surface, # formerly `thisVZminmesh`
-        "off_sac_surface": off_sac_surface, # formerly `thisVZmaxmesh`
+    # ---- build result dict -------------------------------------------------
+    result: dict = {
+        "surfaces": surfaces,
+        "mapped_surfaces": mapped_surfaces,
+        "surface_order": surface_order,
+        "main_diag_dist": main_diag_dist,
+        "skew_diag_dist": skew_diag_dist,
+        "sampled_x_idx": sampled_x_idx,
+        "sampled_y_idx": sampled_y_idx,
         "n_anchors": n_anchors,
         "conformal_jump": conformal_jump,
-        "meta": {"mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"), "pywarper_version": _PYWARPER_VERSION}
+        "meta": {
+            "mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "pywarper_version": _PYWARPER_VERSION,
+        },
     }
+
+    # ---- legacy keys for backward compat -----------------------------------
+    if "on_sac" in surfaces:
+        result["on_sac_surface"] = surfaces["on_sac"]
+        result["mapped_on"] = mapped_surfaces["on_sac"]
+    if "off_sac" in surfaces:
+        result["off_sac_surface"] = surfaces["off_sac"]
+        result["mapped_off"] = mapped_surfaces["off_sac"]
+
+    return result
