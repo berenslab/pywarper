@@ -32,7 +32,7 @@ from scipy.sparse import coo_matrix, hstack, vstack
 from scipy.sparse.linalg import spsolve
 
 try:
-    from sksparse.cholmod import cholesky
+    from sksparse.cholmod import cho_solve
     HAS_CHOLMOD = True
 except ImportError:
     HAS_CHOLMOD = False
@@ -43,6 +43,8 @@ except ImportError:
         "\thttps://github.com/berenslab/pywarper#installation"
     )
     print(_WARN_MSG)
+
+
 
 from importlib import metadata as _metadata
 
@@ -458,7 +460,7 @@ def conformal_map_indep_fixed_diagonals(
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
         if HAS_CHOLMOD:
-            sol = cholesky(AtA)(Atb)
+            sol = cho_solve(AtA, Atb)
         else:
             sol = spsolve(AtA, Atb)
 
