@@ -2473,7 +2473,7 @@ wheels = [
 
 [[package]]
 name = "pygridfit"
-version = "0.1.6"
+version = "0.1.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib" },
@@ -2484,9 +2484,9 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "watermark" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5b/82/4c5120540e0dfebee6b1a6ac8f8da5f76bfa2b9c260427f97235c1e2bbab/pygridfit-0.1.6.tar.gz", hash = "sha256:bc0227dc1d8abfbe3906b57fbcdd3e7e8ecf37ae1b61594d6dde4c466dddba6e", size = 1212514, upload-time = "2025-09-26T14:05:12.018Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b4/78/99965faea953ad2c26cf582b8e1052bc32740881133a7c5c022159b138f9/pygridfit-0.1.7.tar.gz", hash = "sha256:899f5bb63f265dfbfa39f370a61a52dbc3a114c53b45025ed27a69b1ce6aed0e", size = 1260386, upload-time = "2026-03-25T13:43:33.406Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/6f/11e0486488c4d339bb1afc874bd3a7c2b9da51bb6be6c8df548b90465aea/pygridfit-0.1.6-py3-none-any.whl", hash = "sha256:42b2dfa70a08b0ba46136d408abccf438c66503201d25e5c8e3486a1b7d8db19", size = 17800, upload-time = "2025-09-26T14:05:10.869Z" },
+    { url = "https://files.pythonhosted.org/packages/b5/71/a02e8ec46f7904548641619b0f668ca2a53cafd35c434a58794145fb0b41/pygridfit-0.1.7-py3-none-any.whl", hash = "sha256:da8de8af74f49dac811bf18855224358f368615975406803fb232bffd29f57a8", size = 17790, upload-time = "2026-03-25T13:43:31.929Z" },
 ]
 
 [package.optional-dependencies]
@@ -2553,7 +2553,7 @@ wheels = [
 
 [[package]]
 name = "pywarper"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "alphashape" },
@@ -2586,10 +2586,10 @@ requires-dist = [
     { name = "maturin", marker = "extra == 'dev'" },
     { name = "numpy", specifier = ">=2.2.0" },
     { name = "pygridfit", specifier = ">=0.1.5" },
-    { name = "pygridfit", extras = ["scikit-sparse"], marker = "extra == 'scikit-sparse'", specifier = ">=0.1.4" },
+    { name = "pygridfit", extras = ["scikit-sparse"], marker = "extra == 'scikit-sparse'", specifier = ">=0.1.7" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.4.15" },
+    { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.5.0" },
     { name = "scipy", specifier = ">=1.15.0" },
     { name = "skeliner", specifier = ">=0.2.3" },
     { name = "twine", marker = "extra == 'dev'" },
