@@ -759,6 +759,125 @@ def gridder1d(
 # =====================================================================
 
 
+def _split_path(path: list[int], xyz: np.ndarray, split_length: float) -> list[list[int]]:
+    """
+    Divide an ordered node path into n roughly equal sub-paths.
+
+    n = max(1, round(total_length / split_length)), so a 100 µm branch with
+    split_length=30 becomes 3 sub-paths of ~33 µm rather than 30-30-40.
+    Adjacent sub-paths share their boundary node.
+    """
+    coords = xyz[path]
+    edge_lens = np.linalg.norm(np.diff(coords, axis=0), axis=1)
+    L = float(edge_lens.sum())
+    n = max(1, round(L / split_length))
+    if n == 1:
+        return [path]
+
+    cum = np.concatenate([[0.0], np.cumsum(edge_lens)])
+    targets = np.linspace(0.0, L, n + 1)
+
+    # node index in path for each interior cut (skip 0 and L)
+    cut_idx = [0]
+    for t in targets[1:-1]:
+        idx = int(np.argmin(np.abs(cum - t)))
+        if idx > cut_idx[-1]:       # avoid duplicate split points
+            cut_idx.append(idx)
+    cut_idx.append(len(path) - 1)
+
+    return [path[cut_idx[i]: cut_idx[i + 1] + 1]
+            for i in range(len(cut_idx) - 1)
+            if cut_idx[i + 1] > cut_idx[i]]
+
+
+def _orient_classify(
+    skel: Skeleton,
+    branch_split_length: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Branch-level orientation classifier.
+
+    For each node i returns:
+    - vert[i] : |dz| / L for the (sub-)segment containing edge (i → parent[i]).
+                NaN for the root (no parent).
+    - tip[i]  : True if node i is in a terminal branch (ends at a leaf).
+
+    A **branch** is a maximal chain of nodes where every interior node has
+    exactly one child.  If branch_split_length is given, branches longer than
+    that are split into n = round(L / branch_split_length) equal sub-segments
+    so that orientation is evaluated at a consistent spatial scale.  Tip
+    detection always uses the full branch length, not the sub-segment length.
+    """
+    raw_parent = _bfs_parents(skel.edges, len(skel.nodes), root=0)
+    parent = np.asarray(raw_parent, dtype=np.int64)
+    xyz = np.asarray(skel.nodes, dtype=np.float64)
+    N = len(xyz)
+
+    n_ch = np.zeros(N, dtype=int)
+    child_nodes = np.where(parent != -1)[0]
+    if len(child_nodes) == 0:
+        return np.full(N, np.nan), np.zeros(N, dtype=bool)
+    np.add.at(n_ch, parent[child_nodes], 1)
+
+    ch: list[list[int]] = [[] for _ in range(N)]
+    for c in map(int, child_nodes):
+        ch[int(parent[c])].append(c)
+
+    vert = np.full(N, np.nan)
+    tip = np.zeros(N, dtype=bool)
+
+    # DFS over branches.  Each stack entry is (first_node, branch_top_node).
+    # first_node is a direct child of branch_top and is the entry to a new branch.
+    stack: list[tuple[int, int]] = [(c, 0) for c in ch[0]]
+
+    while stack:
+        first, bstart = stack.pop()
+
+        # Walk the single-child chain to the branch bottom (junction node).
+        current = first
+        while n_ch[current] == 1:
+            current = ch[current][0]
+        bend = current
+
+        # Reconstruct ordered branch path by tracing back from bend to bstart.
+        path: list[int] = [bend]
+        cur = int(bend)
+        while cur != bstart:
+            cur = int(parent[cur])
+            path.append(cur)
+        path.reverse()  # [bstart, ..., bend]
+
+        if len(path) >= 2:
+            # All terminal branches are tips regardless of length or orientation.
+            is_term = bool(n_ch[bend] == 0)
+            qualifies_as_tip = is_term
+
+            # Split into sub-segments (or keep as one if no split_length given).
+            subs = (
+                _split_path(path, xyz, branch_split_length)
+                if branch_split_length is not None
+                else [path]
+            )
+
+            for sub in subs:
+                coords = xyz[sub]
+                L_sub = float(np.linalg.norm(np.diff(coords, axis=0), axis=1).sum())
+                dz_sub = abs(float(coords[-1, 2] - coords[0, 2]))
+                bvert = dz_sub / L_sub if L_sub > 0.0 else 0.0
+
+                for node in sub[1:]:  # child nodes in this sub-segment
+                    vert[node] = bvert
+                    if qualifies_as_tip:
+                        tip[node] = True
+
+        # Continue DFS into branches below branch points.
+        if n_ch[bend] >= 2:
+            for c in ch[bend]:
+                stack.append((c, bend))
+
+    return vert, tip
+
+
 def get_z_profile(
     skel: Skeleton,
     extent: list[float | int] | None = None,
@@ -769,6 +888,8 @@ def get_z_profile(
     radius_metric: str | None = None,
     voxel_size: float | None = None,  # only used for volume (union)
     include_soma: bool = False,
+    orientation_threshold: float | None = None,
+    branch_split_length: float | None = None,  # µm
 ) -> dict:
     """
     Compute a 1‑D depth profile.
@@ -777,6 +898,21 @@ def get_z_profile(
         "length" – cable length per bin (histogram + KB‑smoothed).
         "volume" – **union‑correct** morphology volume per bin (voxel union).
 
+    orientation_threshold:
+        If set (float in [0, 1]), also compute split profiles for
+        measure='length':
+          vlength – edges where branch |dz|/L > threshold (vertical /
+                    layer-bridging).
+          hlength – all remaining edges + tip segments (horizontal /
+                    synapse-making).
+        The threshold is compared against the (sub-)segment |dz|/L.
+        All terminal branches (leaf nodes) always go into hlength regardless
+        of their orientation.
+        branch_split_length: if set, each branch is divided into
+        n = round(L / branch_split_length) equal sub-segments so that
+        orientation is evaluated at a consistent spatial scale rather than
+        over the full (possibly very long) branch.
+
     Notes
     -----
     * volume uses a single voxelization (dx._voxelize_union) and
@@ -784,12 +920,13 @@ def get_z_profile(
     * 'include_soma' defaults to False to match the 'length' convention
       (edges only). Set True if you want soma membrane/volume included.
     * For stable plots, keep bin_size ≥ voxel_size (if you set voxel_size).
+    * orientation_threshold is only supported for measure='length'.
     """
 
     if measure == "length":
-        density, nodes = segment_lengths(skel)
+        density, mid = segment_lengths(skel)
     elif measure == "volume":
-        density, nodes = z_slince_volumes(
+        density, mid = z_slince_volumes(
             skel,
             voxel_size=voxel_size,
             include_soma=include_soma,
@@ -798,7 +935,7 @@ def get_z_profile(
     else:
         raise ValueError("measure must be one of {'length','volume'}")
 
-    z_vals = nodes[:, 2]
+    z_vals = mid[:, 2]
 
     # window
     if extent is None:
@@ -810,26 +947,31 @@ def get_z_profile(
     n_bins = max(1, int(np.ceil((z_max - z_min) / bin_size)))
     edges = z_min + np.arange(n_bins + 1) * bin_size
     edges[-1] = z_max
+    x_um = 0.5 * (edges[1:] + edges[:-1])
 
-    # histogram (mass‑preserving)
-    z_hist, _ = np.histogram(z_vals, bins=edges, weights=density)
-    tot = density.sum()
-    if z_hist.sum() > 0:
-        z_hist *= tot / z_hist.sum()
-
-    # Kaiser–Bessel smoothing (same as length)
+    # shared KB-smoothing parameters
     centre = (z_min + z_max) / 2.0
     halfspan = (z_max - z_min) / 2.0
     z_samples = (z_vals - centre) / max(halfspan, np.finfo(float).eps)
-    z_dist = gridder1d(z_samples / 2.0, density, n_bins)
-    if z_dist.sum() > 0:
-        z_dist *= tot / z_dist.sum()
 
-    x_um = 0.5 * (edges[1:] + edges[:-1])
+    def _profile(w: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Histogram + KB-smoothed profile for weight array w."""
+        tot = float(w.sum())
+        if tot == 0.0:
+            return np.zeros(n_bins), np.zeros(n_bins)
+        hist, _ = np.histogram(z_vals, bins=edges, weights=w)
+        if hist.sum() > 0:
+            hist = hist * (tot / hist.sum())
+        dist = gridder1d(z_samples / 2.0, w, n_bins)
+        if dist.sum() > 0:
+            dist = dist * (tot / dist.sum())
+        return hist, dist
+
+    z_hist, z_dist = _profile(density)
     intervals = hdr(x_um, z_dist, mass=hdr_mass)
     unit = skel.meta.get("unit", "µm")
 
-    return {
+    result = {
         "x": x_um,
         "distribution": z_dist,
         "histogram": z_hist,
@@ -844,6 +986,29 @@ def get_z_profile(
         "voxel_size": voxel_size,
         "radius_metric": radius_metric,
     }
+
+    # Orientation split (length only)
+    if orientation_threshold is not None:
+        if measure != "length":
+            raise ValueError("orientation_threshold requires measure='length'")
+
+        vert_vals, tip_mask = _orient_classify(skel, branch_split_length)
+        # vertical: not a tip AND branch |dz|/L > threshold
+        mask_v = np.isfinite(vert_vals) & (vert_vals > orientation_threshold) & ~tip_mask
+
+        v_hist, v_dist = _profile(density * mask_v)
+        h_hist, h_dist = _profile(density * ~mask_v)
+
+        result.update({
+            "vlength_distribution": v_dist,
+            "vlength_histogram": v_hist,
+            "hlength_distribution": h_dist,
+            "hlength_histogram": h_hist,
+            "orientation_threshold": orientation_threshold,
+            "branch_split_length": branch_split_length,
+        })
+
+    return result
 
 
 def _edges_from_bin_size(lo: float, hi: float, bin_size: float) -> np.ndarray:
