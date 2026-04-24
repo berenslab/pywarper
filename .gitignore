@@ -27,6 +27,7 @@ venv/
 .vscode/
 *.swp
 *.swo
+*.npz
 
 dev/
 
