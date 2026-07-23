@@ -2459,7 +2459,7 @@ wheels = [
 
 [[package]]
 name = "pywarper"
-version = "0.2.6"
+version = "0.2.7"
 source = { editable = "." }
 dependencies = [
     { name = "alphashape" },
@@ -2494,7 +2494,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.5.0" },
     { name = "scipy", specifier = ">=1.15.0" },
-    { name = "skeliner", specifier = ">=0.2.3" },
+    { name = "skeliner", specifier = ">=0.2.8" },
     { name = "watermark", specifier = ">=2.5.0" },
 ]
 provides-extras = ["dev", "scikit-sparse"]
@@ -3328,7 +3328,7 @@ wheels = [
 
 [[package]]
 name = "skeliner"
-version = "0.2.7"
+version = "0.2.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "igraph" },
@@ -3349,9 +3349,9 @@ dependencies = [
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "trimesh" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/0d/3618257a4d2b2f310d629d424dee59bf11bb7d6d1fa0a4ec16b434177f08/skeliner-0.2.7.tar.gz", hash = "sha256:d09911f663a4ed7a31ddcf3dce4dc864eb4f73c9210f4a76a15aa65722ece7b4", size = 12057600, upload-time = "2026-02-27T11:51:51.008Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dc/db/afe1221f6ad61fa118748b8911f93932bb8e3b9e3a3d9497c7be4546788f/skeliner-0.2.8.tar.gz", hash = "sha256:94deceeb3c450cd2dcfc1605fdbfd60222bf469d5bc46ffa43278d4e046970ca", size = 12088629, upload-time = "2026-07-23T08:46:28.025Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/65/94/2aa0ac2e9d068c8e0c35cb42e9ee6689b959691ab425132b89a6db49c98d/skeliner-0.2.7-py3-none-any.whl", hash = "sha256:b4c110a0937979178e0f51a5c19cc1232244dec6e44c9cebcd5c3df14d0d634d", size = 113123, upload-time = "2026-02-27T11:51:49.146Z" },
+    { url = "https://files.pythonhosted.org/packages/c1/b0/be884e77cdba8e8eca6354f766c325d20f2e816d08eb99d0d7a503cb6b26/skeliner-0.2.8-py3-none-any.whl", hash = "sha256:9f689a0d8dd0614ff5cf13073fd9da9dab139d36926da49e2bc93deec396f309", size = 113100, upload-time = "2026-07-23T08:46:26.084Z" },
 ]
 
 [[package]]
