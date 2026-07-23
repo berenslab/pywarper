@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pywarper"
-version = "0.2.6"
+version = "0.2.7"
 description = "Conformal mapping-based warping of retinal morphologies."
 authors = []
 requires-python = ">=3.10.0"
@@ -13,7 +13,7 @@ dependencies = [
     "numpy>=2.2.0",
     "pygridfit>=0.1.5",
     "scipy>=1.15.0",
-    "skeliner>=0.2.3",
+    "skeliner>=0.2.8",
     "watermark>=2.5.0",
 ]
 license = "GPL-3.0-or-later"
@@ -24,9 +24,6 @@ readme = {file = "README.md", content-type = "text/markdown"}
 dev = [
     "ruff",
     "pytest",
-    "twine",
-    "maturin",
-    "ipykernel",
 ]
 scikit-sparse = [
     "scikit-sparse>=0.5.0",
