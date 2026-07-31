@@ -1190,7 +1190,7 @@ class Warper:
         """Load the skeleton from *swc_path*."""
 
         if self.verbose:
-            print(f"[pywarper] Loading skeleton → {self.swc_path}")
+            print(f"[pywarper] Loading skeleton -> {self.swc_path}")
 
         if swc_path is None:
             swc_path = self.swc_path
@@ -1216,7 +1216,7 @@ class Warper:
     def load_sac(self, off_sac_points, on_sac_points) -> "Warper":
         """Load the SAC meshes from *off_sac_points* and *on_sac_points*."""
         if self.verbose:
-            print("[pywarper] Loading SAC meshes …")
+            print("[pywarper] Loading SAC meshes...")
         self.off_sac_points = self._as_xyz(off_sac_points)
         self.on_sac_points = self._as_xyz(on_sac_points)
         return self
@@ -1243,7 +1243,7 @@ class Warper:
             self.warped_skeleton = sk.io.load_npz(path)
 
         if self.verbose:
-            print(f"[pywarper] Loaded warped skeleton → {path}")
+            print(f"[pywarper] Loaded warped skeleton -> {path}")
 
     # ---------------------------- Core -----------------------------------
 
@@ -1257,7 +1257,7 @@ class Warper:
     ) -> "Warper":
         """Fit ON / OFF SAC meshes with *pygridfit*."""
         if self.verbose:
-            print("[pywarper] Fitting SAC surfaces …")
+            print("[pywarper] Fitting SAC surfaces...")
 
         if backward_compatible is False and (xmax is None or ymax is None):
             # use the bounding box of the skeleton
@@ -1277,7 +1277,7 @@ class Warper:
         )
         if self.verbose:
             print(
-                f"↳ fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds."
+                f"-> fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds."
             )
 
         _t0 = time.time()
@@ -1292,7 +1292,7 @@ class Warper:
         )
         if self.verbose:
             print(
-                f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds."
+                f"-> fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds."
             )
         return self
 
@@ -1332,7 +1332,7 @@ class Warper:
                 )
 
         if self.verbose:
-            print("[pywarper] Building mapping …")
+            print("[pywarper] Building mapping...")
         self.mapping: dict = build_mapping(
             self.on_sac_surface,
             self.off_sac_surface,
