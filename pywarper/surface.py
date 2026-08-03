@@ -22,6 +22,7 @@ The resulting 2-D coordinates mapping can be applied to any neurite morphology l
 so that axonal and dendritic trees can be visualised *as if* the inner plexiform layer were perfectly
 flat.
 """
+import sys
 import time
 
 import numpy as np
@@ -36,13 +37,15 @@ try:
     HAS_CHOLMOD = True
 except ImportError:
     HAS_CHOLMOD = False
-    _WARN_MSG = (
-        "[pywarper.surface] Optional dependency 'scikit-sparse' (CHOLMOD bindings) not found. "
-        "Falling back to SciPy's sparse linear solver, which is ~5-10x slower for large problems.\n\n"
-        "For platform-specific instructions see the project README:\n"
-        "\thttps://github.com/berenslab/pywarper#installation"
-    )
-    print(_WARN_MSG)
+    if sys.platform != "win32":
+        # scikit-sparse has no Windows wheels, so the warning is unactionable there.
+        _WARN_MSG = (
+            "[pywarper.surface] Optional dependency 'scikit-sparse' (CHOLMOD bindings) not found. "
+            "Falling back to SciPy's sparse linear solver, which is ~5-10x slower for large problems.\n\n"
+            "For platform-specific instructions see the project README:\n"
+            "\thttps://github.com/berenslab/pywarper#installation"
+        )
+        print(_WARN_MSG)
 
 
 
