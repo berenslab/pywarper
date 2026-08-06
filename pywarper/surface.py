@@ -204,12 +204,21 @@ def resample_zgrid(
     #    specifying x= xnodes (ascending), y= ynodes (ascending).
     #    Note that in Python, the first axis in zgrid is y, second is x.
     #    So pass (ynodes, xnodes) in that order:
+    # fill_value=None extrapolates instead of returning NaN. The query grid runs to
+    # round(xmax), which overhangs the last node by up to half a pixel whenever xmax
+    # is not an integer -- the annotation files carry sub-pixel coordinates, so that
+    # is the common case, and NaN there left an all-NaN column on the edge of the
+    # surface. MATLAB never reached this branch: textread('%d') rounded the
+    # coordinates, so its grid ended exactly on the last node. Keeping the sub-pixel
+    # values means the overhang is real, and extrapolating half a pixel of an
+    # already-linear interpolant is continuous with the interior; MATLAB's own guard
+    # (a constant mean(zgrid)) would put a cliff there instead.
     rgi = RegularGridInterpolator(
         (ynodes, xnodes),  # (y-axis, x-axis)
-        zgrid, 
-        method="linear", 
-        bounds_error=False, 
-        fill_value=np.nan  # or e.g. zgrid.mean()
+        zgrid,
+        method="linear",
+        bounds_error=False,
+        fill_value=None
     )
 
     # 2) Make xi, yi as in MATLAB, 
