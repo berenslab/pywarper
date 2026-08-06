@@ -28,7 +28,7 @@ def test_skeleton():
         off_sac = chat_bottom
         on_sac = chat_top
 
-    skel = sk.io.load_swc("./tests/data/Image013-009_01_raw_latest_Uygar.swc")
+    skel = sk.io.load_skeleton_swc("./tests/data/Image013-009_01_raw_latest_Uygar.swc")
     skel.nodes += 1  # to match MATLAB indexing (1-based)
 
     off_sac_surface, _, _ = fit_sac_surface(

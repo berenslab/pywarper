@@ -24,16 +24,73 @@ flat.
 """
 
 import time
+from dataclasses import dataclass, field
 from importlib import metadata as _metadata
+from typing import Any, Iterator
 
 import numpy as np
 from hea.sparse import cho_solve
-from pygridfit import GridFit
+from pygridfit import GamFit, GridFit
 from scipy.interpolate import RegularGridInterpolator
 from scipy.signal import convolve2d
 from scipy.sparse import coo_matrix, hstack, vstack
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
+
+#: Arguments that belong to exactly one fitter, keyed by the fitter that owns them.
+_FITTER_ONLY_SETTINGS: dict[str, tuple[str, ...]] = {
+    "gridfit": ("stride", "smoothness"),
+    "gam": ("k", "bs"),
+}
+
+#: Why the *other* fitter cannot honour them, keyed by the fitter that was chosen.
+_NO_MEANING_BECAUSE: dict[str, str] = {
+    "gam": (
+        "the GAM has no coarse node grid and selects its smoothing parameter by "
+        "REML; use k= and bs= instead"
+    ),
+    "gridfit": (
+        "gridfit's model is the node grid itself rather than a spline basis; use "
+        "stride= and smoothness= instead"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class SacSurface:
+    """A fitted SAC height field on the unit grid.
+
+    Iterating yields ``(zmesh, xmesh, ymesh)`` and nothing else, so
+    ``zmesh, xmesh, ymesh = fit_sac_surface(...)`` keeps working however many
+    diagnostic fields are added here later.
+
+    Attributes
+    ----------
+    zmesh : np.ndarray
+        Surface heights, shape *(xmax, ymax)*.
+    xmesh, ymesh : np.ndarray
+        Coordinate meshes matching `zmesh`.
+    se : np.ndarray or None
+        Pointwise standard error, same shape as `zmesh`. Only the ``"gam"``
+        fitter produces one; `None` under ``"gridfit"``.
+
+        Not an extrapolation guard: a thin-plate spline's null space is the
+        unpenalized plane ``1, x, y``, so it extrapolates as a plane with small
+        `se`, and regions the annotation never covered are not flagged here.
+    summary : dict
+        What the fitter settled on -- basis size, effective degrees of freedom
+        and selected smoothing parameter under ``"gam"``; the supplied
+        `smoothness` and node stride under ``"gridfit"``.
+    """
+
+    zmesh: np.ndarray
+    xmesh: np.ndarray
+    ymesh: np.ndarray
+    se: np.ndarray | None = None
+    summary: dict[str, Any] = field(default_factory=dict)
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        return iter((self.zmesh, self.xmesh, self.ymesh))
 
 
 def fit_sac_surface(
@@ -42,8 +99,11 @@ def fit_sac_surface(
     z: np.ndarray,
     xmax: int | float | None = None,
     ymax: int | float | None = None,
-    stride: int = 3,
-    smoothness: int = 1,
+    method: str = "gridfit",
+    stride: int | None = None,
+    smoothness: int | None = None,
+    k: int | tuple[int, int] | None = None,
+    bs: str | None = None,
     extend: str = "warning",
     interp: str = "triangle",
     regularizer: str = "gradient",
@@ -53,10 +113,18 @@ def fit_sac_surface(
     xscale: float = 1.0,
     yscale: float = 1.0,
     backward_compatible: bool = False,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> SacSurface:
     """
-    Fits a surface to scattered data points (x, y, z) using grid-based interpolation
-    and smoothing. Internally uses a GridFit-based approach to produce a 2D surface.
+    Fit a surface to scattered data points (x, y, z) and read it out on the unit grid.
+
+    Two fitters are available and they answer different questions. ``"gridfit"``
+    makes the output grid *be* the model, one unknown per node penalized by finite
+    differences at a smoothness the caller fixes; it is the ported MATLAB path.
+    ``"gam"`` fits a penalized regression spline in `k` basis functions with the
+    smoothing parameter chosen by REML, then evaluates it. Because the GAM's model
+    is the basis rather than the grid, it is read out on the unit grid directly and
+    skips the coarse-fit-then-resample step `"gridfit"` needs -- on the SAC bands
+    that resampling costs rms ~0.8 and up to ~8 voxels on its own.
 
     Parameters
     ----------
@@ -72,39 +140,177 @@ def fit_sac_surface(
     ymax : int, optional
         Maximum value along the y-axis used to define the interpolation grid.
         If None, the max value from y is used.
-    smoothness : int, default=1
-        Amount of smoothing applied during fitting.
+    method : {"gridfit", "gam"}, default="gridfit"
+        Which fitter to use. ``"gridfit"`` is the default because it is the path
+        the MATLAB parity tests pin.
+    stride : int, optional
+        Node spacing of the ``"gridfit"`` fit, before resampling to the unit grid.
+        Defaults to 3, matching MATLAB. Rejected under ``"gam"``, which has no
+        coarse grid.
+    smoothness : int, optional
+        Amount of smoothing applied by ``"gridfit"``. Defaults to 1, matching
+        MATLAB. Rejected under ``"gam"``, which selects its own by REML.
+    k : int or (int, int), optional
+        ``"gam"`` only. Basis dimension of the smooth -- the model's complexity,
+        unrelated to the output grid size. Defaults to 100. Under ``bs="te"`` it
+        is the dimension per margin, so pass a much smaller number, or a pair to
+        size the two directions separately. Rejected under ``"gridfit"``, whose
+        model is the node grid rather than a basis.
+    bs : {"tp", "te"}, optional
+        ``"gam"`` only. Thin-plate ("tp", isotropic) or tensor product ("te", one
+        smoothing parameter per direction). Defaults to "tp"; on the SAC bands
+        "te" extrapolates considerably worse outside the annotated region.
+        Rejected under ``"gridfit"``.
     extend : str, default="warning"
-        Determines how to handle extrapolation outside data boundaries.
-        Possible values include "warning", "fill", etc. (see GridFit docs).
+        ``"gridfit"`` only. Behaviour for data lying outside the node ranges.
+        The GAM's nodes are the caller's readout grid rather than a grid
+        negotiated with the data, so it has nothing to extend.
     interp : str, default="triangle"
-        Type of interpolation to apply (e.g., "triangle", "bilinear").
+        ``"gridfit"`` only. Interpolation scheme (e.g., "triangle", "bilinear").
     regularizer : str, default="gradient"
-        Regularization method used in the solver (e.g., "gradient", "laplacian").
+        ``"gridfit"`` only. Regularization to impose (e.g., "gradient", "laplacian").
     solver : str, default="normal"
-        Solver backend (e.g., "normal" for normal equations).
+        ``"gridfit"`` only. Solver backend (e.g., "normal" for normal equations).
     maxiter : int, optional
-        Maximum number of solver iterations. If None, defaults to solver-based value.
+        ``"gridfit"`` only. Iteration limit for iterative solvers.
     autoscale : str, default="on"
-        Autoscaling setting for the solver.
-    xscale : float, default=1.0
-        Additional scaling factor applied to the x-dimension during fitting.
-    yscale : float, default=1.0
-        Additional scaling factor applied to the y-dimension during fitting.
+        ``"gridfit"`` only. Autoscaling setting for the solver.
+    xscale, yscale : float, default=1.0
+        ``"gridfit"`` only. Manual scaling factors used in the regularization.
     backward_compatible : bool, default=False
-        If True, use the same node spacing as the original MATLAB implementation.
+        If True, use the 1-based output grid of the original MATLAB implementation
+        (and, under ``"gridfit"``, its node spacing).
 
     Returns
     -------
-    zmesh: np.ndarray (xmax, ymax)
-        2D array of interpolated z-values over the fitted surface / Interpolated surface heights.
-    xmesh, ymesh: np.ndarray (xma, ymax)
-        Grid coordinate matrices matching zmesh.
+    SacSurface
+        `zmesh`, `xmesh`, `ymesh` of shape *(xmax, ymax)*, plus `se` and `summary`.
+        Unpacks as the historical three-tuple.
+
+    Raises
+    ------
+    ValueError
+        If `method` is not recognized, or a fitter-specific argument is passed to
+        the fitter that has no use for it.
+
+    Notes
+    -----
+    Which to use. ``"gridfit"`` stays the default: it reproduces published
+    results, it is the path the MATLAB parity test pins, and on the SAC bands it
+    costs ~0.4 s per surface against ~3 s for ``"gam"``, which matters across a
+    corpus. Reach for ``"gam"`` when the smoothness should come from the data
+    rather than from a hand-set constant, when per-node standard errors are
+    wanted, or when the resampling step is the thing you want gone -- on these
+    bands its interpolation loss is about as large as the whole difference
+    between the two fitters. Where both are supported by data they agree to
+    rms ~1 voxel.
+
+    Extrapolation. Both fitters return a value over the whole lattice, and that is
+    deliberate -- it is the property gridfit is built for, filling the corners
+    smoothly where `griddata` would leave holes outside the convex hull. But a
+    smooth continuation is not a measurement, and how far it can be trusted depends
+    on how far it has to run. The ChAT bands leave the imaged volume diagonally, so
+    a wedge of the output grid sits hundreds of pixels past the last annotated
+    point; with nothing to anchor it, gridfit's gradient regularizer carries the
+    boundary slope onward and reaches z ~ -250 on the test cell, against data
+    spanning [1, 136]. That is inherited, not a porting artifact -- the original
+    MATLAB does the same at its own ``'smoothness',1``. The GAM is better behaved
+    but not exempt (~ -150 on the same wedge), because a thin-plate spline's null
+    space is the unpenalized plane ``1, x, y``, so it too continues linearly.
+
+    That same null space is why `se` cannot be used to detect the problem: the
+    extrapolated plane carries a small standard error. Bound the mapping instead --
+    `Warper.build_mapping(bounds="local")` typically keeps the unsampled corner
+    out, where ``"global"`` does not.
     """
+    if method not in _FITTER_ONLY_SETTINGS:
+        raise ValueError(f"method must be 'gridfit' or 'gam', got {method!r}")
+
+    _reject_foreign_settings(method, stride=stride, smoothness=smoothness, k=k, bs=bs)
+
     if xmax is None:
         xmax = np.max(x).astype(float)
     if ymax is None:
         ymax = np.max(y).astype(float)
+
+    if method == "gridfit":
+        return _fit_sac_surface_gridfit(
+            x,
+            y,
+            z,
+            xmax,
+            ymax,
+            stride=stride,
+            smoothness=smoothness,
+            extend=extend,
+            interp=interp,
+            regularizer=regularizer,
+            solver=solver,
+            maxiter=maxiter,
+            autoscale=autoscale,
+            xscale=xscale,
+            yscale=yscale,
+            backward_compatible=backward_compatible,
+        )
+    return _fit_sac_surface_gam(
+        x,
+        y,
+        z,
+        xmax,
+        ymax,
+        k=k,
+        bs=bs,
+        backward_compatible=backward_compatible,
+    )
+
+
+def _reject_foreign_settings(method: str, **settings: Any) -> None:
+    """Refuse a setting that belongs to the fitter which was not chosen.
+
+    Silently dropping a `smoothness` the caller asked for would hide that the GAM
+    picked its own by REML, and dropping a `k` would hide that gridfit has no
+    basis to size.
+    """
+    other = "gam" if method == "gridfit" else "gridfit"
+    passed = [
+        name for name in _FITTER_ONLY_SETTINGS[other] if settings[name] is not None
+    ]
+    if not passed:
+        return
+    plural = len(passed) > 1
+    raise ValueError(
+        f"{', '.join(passed)} {'are' if plural else 'is a'} {other} "
+        f"setting{'s' if plural else ''} with no meaning under method={method!r}: "
+        f"{_NO_MEANING_BECAUSE[method]}."
+    )
+
+
+def _fit_sac_surface_gridfit(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    xmax: int | float,
+    ymax: int | float,
+    *,
+    stride: int | None,
+    smoothness: int | None,
+    extend: str,
+    interp: str,
+    regularizer: str,
+    solver: str,
+    maxiter: int | None,
+    autoscale: str,
+    xscale: float,
+    yscale: float,
+    backward_compatible: bool,
+) -> SacSurface:
+    """Solve for one height per node, then resample onto the unit grid.
+
+    The nodes are spaced `stride` apart, so the fit lives on a coarser grid than
+    the readout and has to be interpolated up to it.
+    """
+    stride = 3 if stride is None else stride
+    smoothness = 1 if smoothness is None else smoothness
 
     if backward_compatible:
         # MATLAB-style nodes
@@ -130,13 +336,64 @@ def fit_sac_surface(
         xscale=xscale,
         yscale=yscale,
     ).fit()
-    zgrid = np.asarray(g.zgrid)
 
     zmesh, xmesh, ymesh = resample_zgrid(
-        xnodes, ynodes, zgrid, xmax, ymax, backward_compatible
+        xnodes, ynodes, np.asarray(g.zgrid), xmax, ymax, backward_compatible
     )
 
-    return zmesh, xmesh, ymesh
+    return SacSurface(
+        zmesh=zmesh,
+        xmesh=xmesh,
+        ymesh=ymesh,
+        summary={"method": "gridfit", "smoothness": smoothness, "stride": stride},
+    )
+
+
+def _fit_sac_surface_gam(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    xmax: int | float,
+    ymax: int | float,
+    *,
+    k: int | tuple[int, int] | None,
+    bs: str | None,
+    backward_compatible: bool,
+) -> SacSurface:
+    """Fit a penalized regression spline and evaluate it on the unit grid.
+
+    The basis is the model, not the grid, so the fit is read out at unit spacing
+    directly and there is no resampling step.
+    """
+    k = 100 if k is None else k
+    bs = "tp" if bs is None else bs
+
+    nx, ny = round(xmax), round(ymax)
+    if backward_compatible:
+        xnodes = np.arange(1.0, nx + 1)
+        ynodes = np.arange(1.0, ny + 1)
+    else:
+        xnodes = np.arange(0.0, nx)
+        ynodes = np.arange(0.0, ny)
+
+    # extend="always" so points past the node range never warn -- these nodes are
+    # the caller's readout grid, not one negotiated with the data, and extending
+    # them cannot change the answer because predict() reads the fit out on the
+    # pristine grid. GamFit's validator writes the extended boundary back into the
+    # arrays it is handed, so it gets copies.
+    g = GamFit(x, y, z, xnodes.copy(), ynodes.copy(), k=k, bs=bs, extend="always").fit()
+    surface = g.predict(xnodes, ynodes)
+
+    summary = g.summary()
+    summary["method"] = "gam"
+    return SacSurface(
+        # GamFit lays its grids out (ny, nx); pywarper indexes surfaces (nx, ny).
+        zmesh=surface.zgrid.T,
+        xmesh=surface.xgrid.T,
+        ymesh=surface.ygrid.T,
+        se=surface.se_grid.T,
+        summary=summary,
+    )
 
 
 def resample_zgrid(

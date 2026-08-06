@@ -1181,6 +1181,8 @@ class Warper:
         self.voxel_resolution = voxel_resolution
         self.verbose = verbose
         self.swc_path = swc_path
+        # what fit_surfaces() settled on, per band; folded into the mapping meta
+        self.surface_fit: dict[str, dict] = {}
 
         if off_sac_points is not None:
             self.off_sac_points = self._as_xyz(off_sac_points)
@@ -1204,7 +1206,7 @@ class Warper:
             swc_path = self.swc_path
 
         if swc_path is not None:
-            self.skeleton = sk.io.load_swc(swc_path)
+            self.skeleton = sk.io.load_skeleton_swc(swc_path)
         else:
             raise ValueError("SWC path must be provided to load the skeleton.")
 
@@ -1239,7 +1241,7 @@ class Warper:
         path = Path(filepath)
 
         if path.suffix.lower() == ".swc":
-            self.warped_skeleton = sk.io.load_swc(path)
+            self.warped_skeleton = sk.io.load_skeleton_swc(path)
 
             if (med_z_on is not None) and (med_z_off is not None):
                 self.warped_skeleton.extra["med_z_on"] = float(med_z_on)
@@ -1259,11 +1261,26 @@ class Warper:
         self,
         xmax: int | float | None = None,
         ymax: int | float | None = None,
-        stride: int = 3,
-        smoothness: int = 15,
+        method: str = "gridfit",
+        stride: int | None = None,
+        smoothness: int | None = None,
+        k: int | tuple[int, int] | None = None,
+        bs: str | None = None,
         backward_compatible: bool = False,
     ) -> "Warper":
-        """Fit ON / OFF SAC meshes with *pygridfit*."""
+        """Fit the ON / OFF SAC meshes.
+
+        Parameters
+        ----------
+        method : {"gridfit", "gam"}, default="gridfit"
+            Which fitter to use, see :func:`pywarper.surface.fit_sac_surface`.
+        stride, smoothness : int, optional
+            ``"gridfit"`` settings; default to 3 and 15 here. Rejected under
+            ``"gam"``.
+        k, bs : optional
+            ``"gam"`` settings; default to 100 and "tp". Rejected under
+            ``"gridfit"``.
+        """
         if self.verbose:
             print("[pywarper] Fitting SAC surfaces...")
 
@@ -1272,36 +1289,36 @@ class Warper:
             xmax = max(self.off_sac_points[0].max(), self.on_sac_points[0].max())
             ymax = max(self.off_sac_points[1].max(), self.on_sac_points[1].max())
 
-        _t0 = time.time()
-        self.off_sac_surface, *_ = fit_sac_surface(
-            x=self.off_sac_points[0],
-            y=self.off_sac_points[1],
-            z=self.off_sac_points[2],
-            stride=stride,
-            smoothness=smoothness,
-            xmax=xmax,
-            ymax=ymax,
-            backward_compatible=backward_compatible,
-        )
-        if self.verbose:
-            print(
-                f"-> fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds."
-            )
+        if method == "gridfit":
+            stride = 3 if stride is None else stride
+            smoothness = 15 if smoothness is None else smoothness
 
-        _t0 = time.time()
-        self.on_sac_surface, *_ = fit_sac_surface(
-            x=self.on_sac_points[0],
-            y=self.on_sac_points[1],
-            z=self.on_sac_points[2],
-            smoothness=smoothness,
-            xmax=xmax,
-            ymax=ymax,
-            backward_compatible=backward_compatible,
-        )
-        if self.verbose:
-            print(
-                f"-> fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds."
+        self.surface_fit = {}
+        for band, points, label in (
+            ("off", self.off_sac_points, "OFF (max)"),
+            ("on", self.on_sac_points, "ON (min)"),
+        ):
+            _t0 = time.time()
+            surface = fit_sac_surface(
+                x=points[0],
+                y=points[1],
+                z=points[2],
+                xmax=xmax,
+                ymax=ymax,
+                method=method,
+                stride=stride,
+                smoothness=smoothness,
+                k=k,
+                bs=bs,
+                backward_compatible=backward_compatible,
             )
+            setattr(self, f"{band}_sac_surface", surface.zmesh)
+            setattr(self, f"{band}_sac_surface_se", surface.se)
+            self.surface_fit[band] = surface.summary
+            if self.verbose:
+                print(
+                    f"-> fitting {label} surface\n    done in {time.time() - _t0:.2f} seconds."
+                )
         return self
 
     def build_mapping(
@@ -1350,6 +1367,9 @@ class Warper:
             backward_compatible=backward_compatible,
             verbose=self.verbose,
         )
+        if self.surface_fit:
+            # so a warped skeleton records how its surfaces were fitted
+            self.mapping["meta"]["surface_fit"] = self.surface_fit
         return self
 
     def warp_skeleton(
