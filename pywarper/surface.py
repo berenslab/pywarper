@@ -22,34 +22,15 @@ The resulting 2-D coordinates mapping can be applied to any neurite morphology l
 so that axonal and dendritic trees can be visualised *as if* the inner plexiform layer were perfectly
 flat.
 """
-import sys
 import time
+from importlib import metadata as _metadata
 
 import numpy as np
+from hea.sparse import cho_solve
 from pygridfit import GridFit
 from scipy.interpolate import RegularGridInterpolator
 from scipy.signal import convolve2d
 from scipy.sparse import coo_matrix, hstack, vstack
-from scipy.sparse.linalg import spsolve
-
-try:
-    from sksparse.cholmod import cho_solve
-    HAS_CHOLMOD = True
-except ImportError:
-    HAS_CHOLMOD = False
-    if sys.platform != "win32":
-        # scikit-sparse has no Windows wheels, so the warning is unactionable there.
-        _WARN_MSG = (
-            "[pywarper.surface] Optional dependency 'scikit-sparse' (CHOLMOD bindings) not found. "
-            "Falling back to SciPy's sparse linear solver, which is ~5-10x slower for large problems.\n\n"
-            "For platform-specific instructions see the project README:\n"
-            "\thttps://github.com/berenslab/pywarper#installation"
-        )
-        print(_WARN_MSG)
-
-
-
-from importlib import metadata as _metadata
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
 
@@ -469,12 +450,11 @@ def conformal_map_indep_fixed_diagonals(
                  Mreal[:, fixed_pts] @ fixed_vals[:, 1]
         b = -np.concatenate([b_real, b_imag])
 
+        # AtA is symmetric positive definite, so a sparse Cholesky applies and is
+        # several times faster than the general LU of scipy's spsolve.
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
-        if HAS_CHOLMOD:
-            sol = cho_solve(AtA, Atb)
-        else:
-            sol = spsolve(AtA, Atb)
+        sol = cho_solve(AtA, Atb)
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))

@@ -765,6 +765,32 @@ wheels = [
 ]
 
 [[package]]
+name = "hea"
+version = "0.1.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "matplotlib", version = "3.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "polars" },
+    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/20/67/a221a9fe93549a815767850572b3a4d97e962f7e0cf4a0ffab63ea9c6871/hea-0.1.9.tar.gz", hash = "sha256:eeb08b716c3aa3631e84e048f251240b59f837da92c73fc1b933b02081c7c8a5", size = 1777280, upload-time = "2026-08-06T12:43:51.439Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/38/bb27374b80229735ffb1be272dd6658e7492e2eecf0fb724801ee0869f7d/hea-0.1.9-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a6fe15ec6346ca7310a7abe0eec02ca31162d9405626490c79181fdae6606d92", size = 2625872, upload-time = "2026-08-06T12:43:39.772Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/ed/e404869186e91ef0c5dbb0b32a97e33e4ed0359020a66449872c5b77ffdc/hea-0.1.9-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:4280b620ac1d8cdbc65c87cf4aa7a5a2f14ca304819f9dd6ed2ad9e80708e2c7", size = 2581915, upload-time = "2026-08-06T12:43:41.597Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/67/37f2fc512fe8438a8192fcea4e960e626529d5fb530bac58faddee2772a9/hea-0.1.9-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b07901ed7e690bf8518ea331772049da23a4a8d5319bf93f84e3c52534162e90", size = 2652122, upload-time = "2026-08-06T12:43:42.899Z" },
+    { url = "https://files.pythonhosted.org/packages/90/64/6710ebec1f23f7b5a97b7ff75202a2d5e66a8d69bac13833b5b1ad62ca6b/hea-0.1.9-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3ae65fb6f45e4a8ce068ecd8498511b3d5d3cd2688a94e669c670661f8e0ed22", size = 2680332, upload-time = "2026-08-06T12:43:44.438Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/ce/77474f7390950e9feb135ce4ef0107d0dfb1ce578e84999c81c1497ae1c1/hea-0.1.9-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1eb7cdb72122a131b36cce7cb9067c2794c3ba043806ae524ac3464e3c83661e", size = 2828284, upload-time = "2026-08-06T12:43:45.959Z" },
+    { url = "https://files.pythonhosted.org/packages/01/75/08f2518d8a4c584b481092096b6fde8e6e14e9ceef2655d7837f73eda59a/hea-0.1.9-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e4eb5cb8e18f4439a95369628fb4dd6be476798247b1bc81640b764b06a39e4b", size = 2914094, upload-time = "2026-08-06T12:43:48.013Z" },
+    { url = "https://files.pythonhosted.org/packages/64/de/c655c3342746739ba7c95b29c4f03be331a83ca323e88a65b156cdc235c5/hea-0.1.9-cp310-abi3-win_amd64.whl", hash = "sha256:4f29cc6213be98c93ec32389ef2dda3b965bdcfcf65ca6a5505295a424c5de03", size = 2590978, upload-time = "2026-08-06T12:43:49.964Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -2290,6 +2316,34 @@ wheels = [
 ]
 
 [[package]]
+name = "polars"
+version = "1.41.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "polars-runtime-32" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ff/f9/aeda46259b0669247a160315d2d51269de9504b9dd2f70acadbcb22f46b7/polars-1.41.2.tar.gz", hash = "sha256:256d6731162371b77f3f29a55eacb8c0fc740ddb1a293a01d2ef5b5393c5c708", size = 737996, upload-time = "2026-05-29T17:39:15.604Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/22/28f62d24f7db56ac4343588f9362d49b7b4177e55ac47a466fe696b0099b/polars-1.41.2-py3-none-any.whl", hash = "sha256:23ce9a2910b6e3e8d4258770bf44aa17170958df7af6e85feedf4458a04d8d29", size = 833445, upload-time = "2026-05-29T17:37:05.576Z" },
+]
+
+[[package]]
+name = "polars-runtime-32"
+version = "1.41.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/56/54e3ea0e9b64f327179049e4742241cc6b1d3e8fa414b05a057dd26df367/polars_runtime_32-1.41.2.tar.gz", hash = "sha256:7af09ec1ab053da2c9669e8d15f809a4083a29be05db57111688b8051062af56", size = 2989474, upload-time = "2026-05-29T17:39:17.257Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d6/9b/fe72a3811c0357cdb06c67bdc7695fa1623ad47948fc523195f5ac31037f/polars_runtime_32-1.41.2-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:95a08346dac337357cdb825c8076df7d36da54c4caa59a5cb41d0a30691c5edd", size = 52265283, upload-time = "2026-05-29T17:37:09.407Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/93/fab9da803fd80d9e83ef88c20932f637a10bc611b20415fc322eec84bc44/polars_runtime_32-1.41.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:dedfaeec2c7f995298da7319dd9431d662e5dd1d0ec51b1459df4a0234ceff52", size = 46571222, upload-time = "2026-05-29T17:37:13.698Z" },
+    { url = "https://files.pythonhosted.org/packages/c8/2a/8843f34a8ac57acd058a39b87b03b580dd352a490e9dae0415e02033bdd4/polars_runtime_32-1.41.2-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:18eea22c5cc34e27f8a60950458ad81e6a9ea75e89363ca1367e14e7e7f781fc", size = 50409372, upload-time = "2026-05-29T17:37:17.875Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/c6/92b352fe88cf51bd0a19fb99e1c0cbe46aa26c14dcf7995b89869cd932ae/polars_runtime_32-1.41.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2630540dfdfb0f36f9b04a07c7c2e3f50bf2ad384113263c1c812007ee9141e0", size = 56405484, upload-time = "2026-05-29T17:37:22.684Z" },
+    { url = "https://files.pythonhosted.org/packages/74/c4/bae3174c3b02f6b441d2e58594387abcd509f67a098f682a83b195f08966/polars_runtime_32-1.41.2-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:20e969e08f9b137e233c04cc04de73d9795f89eb77d34854e40a025965a43763", size = 50603512, upload-time = "2026-05-29T17:37:27.422Z" },
+    { url = "https://files.pythonhosted.org/packages/f4/ed/f2d26ae02d92c2689056838ed59e2a626326ad23c2831d58637d25f6c82a/polars_runtime_32-1.41.2-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e7016a3deb641b64a31447abbbee0f34bd020a6a9ae34ee6b743837def15e2a4", size = 54328561, upload-time = "2026-05-29T17:37:32.587Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/c4/9c3831cc885dc7769e59abf8f583821a5fb4403fd0e4eba0ccc6d47a3d4b/polars_runtime_32-1.41.2-cp310-abi3-win_amd64.whl", hash = "sha256:1e5e5377c315e0dcafdfb2a31adc546abbaeb3f9cb1864e6536523d2af473265", size = 51978643, upload-time = "2026-05-29T17:37:37.443Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/c6/79e9f3f270270d7ed5575d92b7bfef49f01abd9275447161275b23b553a8/polars_runtime_32-1.41.2-cp310-abi3-win_arm64.whl", hash = "sha256:843d96f69d18eca53429c1198e58891db7f18111f83b9c419bb45ad9d73eaed5", size = 46006901, upload-time = "2026-05-29T17:37:42.522Z" },
+]
+
+[[package]]
 name = "prometheus-client"
 version = "0.25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2376,9 +2430,10 @@ wheels = [
 
 [[package]]
 name = "pygridfit"
-version = "0.1.7"
-source = { registry = "https://pypi.org/simple" }
+version = "0.2.0"
+source = { git = "https://github.com/berenslab/pygridfit.git?branch=main#27f19090fd11900b6bab07fe6b8e3421e37f9eba" }
 dependencies = [
+    { name = "hea" },
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "matplotlib", version = "3.11.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2389,15 +2444,6 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "watermark" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/b4/78/99965faea953ad2c26cf582b8e1052bc32740881133a7c5c022159b138f9/pygridfit-0.1.7.tar.gz", hash = "sha256:899f5bb63f265dfbfa39f370a61a52dbc3a114c53b45025ed27a69b1ce6aed0e", size = 1260386, upload-time = "2026-03-25T13:43:33.406Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/71/a02e8ec46f7904548641619b0f668ca2a53cafd35c434a58794145fb0b41/pygridfit-0.1.7-py3-none-any.whl", hash = "sha256:da8de8af74f49dac811bf18855224358f368615975406803fb232bffd29f57a8", size = 17790, upload-time = "2026-03-25T13:43:31.929Z" },
-]
-
-[package.optional-dependencies]
-scikit-sparse = [
-    { name = "scikit-sparse" },
 ]
 
 [[package]]
@@ -2459,10 +2505,11 @@ wheels = [
 
 [[package]]
 name = "pywarper"
-version = "0.2.7"
+version = "0.2.8"
 source = { editable = "." }
 dependencies = [
     { name = "alphashape" },
+    { name = "hea" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -2471,33 +2518,30 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "skeliner" },
-    { name = "watermark" },
+    { name = "trimesh" },
 ]
 
 [package.optional-dependencies]
 dev = [
     { name = "pytest" },
     { name = "ruff" },
-]
-scikit-sparse = [
-    { name = "pygridfit", extra = ["scikit-sparse"] },
-    { name = "scikit-sparse" },
+    { name = "watermark" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "alphashape", specifier = ">=1.3.1" },
+    { name = "hea", specifier = ">=0.1.9" },
     { name = "numpy", specifier = ">=2.2.0" },
-    { name = "pygridfit", specifier = ">=0.1.5" },
-    { name = "pygridfit", extras = ["scikit-sparse"], marker = "extra == 'scikit-sparse'", specifier = ">=0.1.7" },
+    { name = "pygridfit", git = "https://github.com/berenslab/pygridfit.git?branch=main" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
-    { name = "scikit-sparse", marker = "extra == 'scikit-sparse'", specifier = ">=0.5.0" },
     { name = "scipy", specifier = ">=1.15.0" },
     { name = "skeliner", specifier = ">=0.2.8" },
-    { name = "watermark", specifier = ">=2.5.0" },
+    { name = "trimesh", specifier = ">=4.0" },
+    { name = "watermark", marker = "extra == 'dev'", specifier = ">=2.5.0" },
 ]
-provides-extras = ["dev", "scikit-sparse"]
+provides-extras = ["dev"]
 
 [[package]]
 name = "pywinpty"
@@ -3020,21 +3064,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/cb/46/4965251734c2b6fcdca1b1b187d20bcac3af0ee5b083b89c910bb961ce3a/ruff-0.15.22-py3-none-win_amd64.whl", hash = "sha256:9be63ba1eb936acd2d1342fb8337c356353706fce233b2a15a09a97037e6acde", size = 11938297, upload-time = "2026-07-16T15:14:07.316Z" },
     { url = "https://files.pythonhosted.org/packages/57/c9/e69b1ff4c8b69093ef08b8919ab767af0569666865b39c30a8795d88d3c6/ruff-0.15.22-py3-none-win_arm64.whl", hash = "sha256:e1168075b72158510839f250027659cdd78476f40507dd517892304c41318661", size = 11298172, upload-time = "2026-07-16T15:14:10.51Z" },
 ]
-
-[[package]]
-name = "scikit-sparse"
-version = "0.5.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "packaging" },
-    { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/4a/70/2351a8755de0b3d9821864299d6bba3feafb91e106b9b762a2675910392e/scikit_sparse-0.5.0.tar.gz", hash = "sha256:217579251b1d91dcfeab5a16d6408f462dc353939f9e5dfa65ec0b41f0b603dc", size = 106285, upload-time = "2026-03-03T19:18:41.586Z" }
 
 [[package]]
 name = "scipy"
