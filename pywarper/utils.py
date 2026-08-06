@@ -1,4 +1,5 @@
 """pywarper.utils"""
+
 import numpy as np
 
 
@@ -84,7 +85,14 @@ def build_surface_correspondences(
     off_output_pts = np.column_stack(
         [mapped_off[:, 0], mapped_off[:, 1], np.full(mapped_off.shape[0], med_z_off)]
     )
-    return on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off
+    return (
+        on_input_pts,
+        off_input_pts,
+        on_output_pts,
+        off_output_pts,
+        med_z_on,
+        med_z_off,
+    )
 
 
 def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarray]:
@@ -107,14 +115,14 @@ def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarr
     data = np.loadtxt(
         fname,
         comments="#",
-        skiprows=1,        # skip the header line
-        usecols=(5, 7, 6), # X, Slice, Y in desired order
+        skiprows=1,  # skip the header line
+        usecols=(5, 7, 6),  # X, Slice, Y in desired order
         dtype=np.float64,
     )
 
-    x = data[:, 0] + 1          # KNOSSOS X  → +1 for MATLAB convention
-    y = data[:, 1]              # Slice (already 1-based)
-    z = data[:, 2] + 1          # KNOSSOS Y  → +1
+    x = data[:, 0] + 1  # KNOSSOS X  → +1 for MATLAB convention
+    y = data[:, 1]  # Slice (already 1-based)
+    z = data[:, 2] + 1  # KNOSSOS Y  → +1
 
     if unit == "voxel":
         return {"x": x, "y": y, "z": z}

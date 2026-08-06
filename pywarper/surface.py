@@ -22,6 +22,7 @@ The resulting 2-D coordinates mapping can be applied to any neurite morphology l
 so that axonal and dendritic trees can be visualised *as if* the inner plexiform layer were perfectly
 flat.
 """
+
 import time
 from importlib import metadata as _metadata
 
@@ -34,13 +35,14 @@ from scipy.sparse import coo_matrix, hstack, vstack
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
 
+
 def fit_sac_surface(
     x: np.ndarray,
     y: np.ndarray,
     z: np.ndarray,
     xmax: int | float | None = None,
     ymax: int | float | None = None,
-    stride: int = 3, 
+    stride: int = 3,
     smoothness: int = 1,
     extend: str = "warning",
     interp: str = "triangle",
@@ -50,7 +52,7 @@ def fit_sac_surface(
     autoscale: str = "on",
     xscale: float = 1.0,
     yscale: float = 1.0,
-    backward_compatible: bool = False
+    backward_compatible: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Fits a surface to scattered data points (x, y, z) using grid-based interpolation
@@ -91,7 +93,7 @@ def fit_sac_surface(
         Additional scaling factor applied to the y-dimension during fitting.
     backward_compatible : bool, default=False
         If True, use the same node spacing as the original MATLAB implementation.
-        
+
     Returns
     -------
     zmesh: np.ndarray (xmax, ymax)
@@ -106,23 +108,28 @@ def fit_sac_surface(
 
     if backward_compatible:
         # MATLAB-style nodes
-        xnodes = np.hstack([np.arange(1., xmax, stride), np.array([xmax])])
-        ynodes = np.hstack([np.arange(1., ymax, stride), np.array([ymax])])
+        xnodes = np.hstack([np.arange(1.0, xmax, stride), np.array([xmax])])
+        ynodes = np.hstack([np.arange(1.0, ymax, stride), np.array([ymax])])
     else:
         xnodes = np.arange(0, xmax + stride, stride)
         ynodes = np.arange(0, ymax + stride, stride)
 
-    g = GridFit(x, y, z, xnodes, ynodes, 
-                    smoothness=smoothness,
-                    extend=extend,
-                    interp=interp,
-                    regularizer=regularizer,
-                    solver=solver,
-                    maxiter=maxiter,
-                    autoscale=autoscale,
-                    xscale=xscale,
-                    yscale=yscale,
-        ).fit()
+    g = GridFit(
+        x,
+        y,
+        z,
+        xnodes,
+        ynodes,
+        smoothness=smoothness,
+        extend=extend,
+        interp=interp,
+        regularizer=regularizer,
+        solver=solver,
+        maxiter=maxiter,
+        autoscale=autoscale,
+        xscale=xscale,
+        yscale=yscale,
+    ).fit()
     zgrid = np.asarray(g.zgrid)
 
     zmesh, xmesh, ymesh = resample_zgrid(
@@ -131,13 +138,14 @@ def fit_sac_surface(
 
     return zmesh, xmesh, ymesh
 
+
 def resample_zgrid(
     xnodes: np.ndarray,
     ynodes: np.ndarray,
     zgrid: np.ndarray,
     xmax: int | float,
     ymax: int | float,
-    backward_compatible: bool = False
+    backward_compatible: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Resamples a 2D grid (zgrid) at integer coordinates up to xmax and ymax.
@@ -181,7 +189,7 @@ def resample_zgrid(
     xmax = round(xmax)
     ymax = round(ymax)
 
-    # 1) Build the interpolator, 
+    # 1) Build the interpolator,
     #    specifying x= xnodes (ascending), y= ynodes (ascending).
     #    Note that in Python, the first axis in zgrid is y, second is x.
     #    So pass (ynodes, xnodes) in that order:
@@ -199,23 +207,17 @@ def resample_zgrid(
         zgrid,
         method="linear",
         bounds_error=False,
-        fill_value=None
+        fill_value=None,
     )
 
-    # 2) Make xi, yi as in MATLAB, 
+    # 2) Make xi, yi as in MATLAB,
     #    then do xi=xi', yi=yi' => shape (xmax, ymax).
     if backward_compatible:
         xi_m, yi_m = np.meshgrid(
-            np.arange(1, xmax+1), 
-            np.arange(1, ymax+1), 
-            indexing='xy'
+            np.arange(1, xmax + 1), np.arange(1, ymax + 1), indexing="xy"
         )
     else:
-        xi_m, yi_m = np.meshgrid(
-            np.arange(0, xmax), 
-            np.arange(0, ymax), 
-            indexing='xy'
-        )
+        xi_m, yi_m = np.meshgrid(np.arange(0, xmax), np.arange(0, ymax), indexing="xy")
     xi = xi_m.T  # shape (xmax, ymax)
     yi = yi_m.T  # shape (xmax, ymax)
 
@@ -233,9 +235,7 @@ def resample_zgrid(
 
 
 def calculate_diag_length(
-    xpos: np.ndarray,
-    ypos: np.ndarray,
-    VZmesh: np.ndarray
+    xpos: np.ndarray, ypos: np.ndarray, VZmesh: np.ndarray
 ) -> tuple[float, float]:
     """
     Computes the 3D length along the main and skew diagonals of VZmesh
@@ -253,18 +253,12 @@ def calculate_diag_length(
 
     # Build regular-grid interpolators
     interp_x = RegularGridInterpolator(
-        (xpos, ypos),
-        np.meshgrid(xpos, ypos, indexing="ij")[0],
-        method="linear"
+        (xpos, ypos), np.meshgrid(xpos, ypos, indexing="ij")[0], method="linear"
     )
     interp_y = RegularGridInterpolator(
-        (xpos, ypos),
-        np.meshgrid(xpos, ypos, indexing="ij")[1],
-        method="linear"
+        (xpos, ypos), np.meshgrid(xpos, ypos, indexing="ij")[1], method="linear"
     )
-    interp_z = RegularGridInterpolator(
-        (xpos, ypos), VZmesh, method="linear"
-    )
+    interp_z = RegularGridInterpolator((xpos, ypos), VZmesh, method="linear")
 
     if N >= M:
         # vectors of length N
@@ -293,15 +287,11 @@ def calculate_diag_length(
     z_skew_v = interp_z(pts_skew)
 
     # Stack, diff, and accumulate Euclidean distances (vectorised, no Python loop)
-    diffs_main = np.diff(
-        np.stack((x_main_v, y_main_v, z_main_v), axis=1), axis=0
-    )
-    diffs_skew = np.diff(
-        np.stack((x_skew_v, y_skew_v, z_skew_v), axis=1), axis=0
-    )
+    diffs_main = np.diff(np.stack((x_main_v, y_main_v, z_main_v), axis=1), axis=0)
+    diffs_skew = np.diff(np.stack((x_skew_v, y_skew_v, z_skew_v), axis=1), axis=0)
 
-    main_diag_dist = np.sqrt((diffs_main ** 2).sum(1)).sum()
-    skew_diag_dist = np.sqrt((diffs_skew ** 2).sum(1)).sum()
+    main_diag_dist = np.sqrt((diffs_main**2).sum(1)).sum()
+    skew_diag_dist = np.sqrt((diffs_skew**2).sum(1)).sum()
 
     return main_diag_dist, skew_diag_dist
 
@@ -328,11 +318,11 @@ def assign_local_coordinates(triangles: np.ndarray) -> tuple[np.ndarray, ...]:
     d13 = np.linalg.norm(v1 - v3, axis=1)
     d23 = np.linalg.norm(v2 - v3, axis=1)
 
-    y3 = ((-d12) ** 2 + d13 ** 2 - d23 ** 2) / (2 * -d12)
-    x3 = np.sqrt(np.maximum(0.0, d13 ** 2 - y3 ** 2))
+    y3 = ((-d12) ** 2 + d13**2 - d23**2) / (2 * -d12)
+    x3 = np.sqrt(np.maximum(0.0, d13**2 - y3**2))
 
     w2 = -x3 - 1j * y3
-    w1 =  x3 + 1j * (y3 + d12)
+    w1 = x3 + 1j * (y3 + d12)
     w3 = 1j * (-d12)
 
     zeta = np.abs(np.real(1j * (np.conj(w2) * w1 - np.conj(w1) * w2)))
@@ -346,12 +336,12 @@ def conformal_map_indep_fixed_diagonals(
     ypos: np.ndarray,
     VZmesh: np.ndarray,
     *,
-    n_anchors: int = 16,        # 4, 8 (default) or 16
-    backward_compatible: bool = False
+    n_anchors: int = 16,  # 4, 8 (default) or 16
+    backward_compatible: bool = False,
 ) -> np.ndarray:
     """
-    Creates a quasi-conformal 2D mapping of the surface in VZmesh. 
-    Diagonal constraints are fixed using mainDiagDist and skewDiagDist 
+    Creates a quasi-conformal 2D mapping of the surface in VZmesh.
+    Diagonal constraints are fixed using mainDiagDist and skewDiagDist
     for consistent scaling.
 
     Parameters
@@ -369,10 +359,10 @@ def conformal_map_indep_fixed_diagonals(
     n_anchors : int, default=16
         Number of anchor points to use for the conformal mapping.
         Options are 4, 8 (default), or 16 anchors.
-            - 4   → original behaviour (two separate solves, then average)  
-            - 8   → add horizontal/vertical mid-lines (single solve)  
+            - 4   → original behaviour (two separate solves, then average)
+            - 8   → add horizontal/vertical mid-lines (single solve)
             - 16  → also add the quarter-lines (single solve)
-        
+
     Returns
     -------
     mappedPositions : np.ndarray
@@ -385,7 +375,7 @@ def conformal_map_indep_fixed_diagonals(
     constructing a sparse system to enforce approximate conformality, and then
     solving for new vertex positions subject to diagonally fixed boundaries.
     The final 2D layout merges two separate diagonal constraints.
-    """  
+    """
     M, N = VZmesh.shape
 
     if backward_compatible:
@@ -394,15 +384,15 @@ def conformal_map_indep_fixed_diagonals(
     else:
         xpos_new = xpos
         ypos_new = ypos
-    vertexCount   = M * N
+    vertexCount = M * N
     triangleCount = (2 * M - 2) * (N - 1)
 
     # -----------------------------------------------------------
     # 1. triangulation on the regular grid
     # -----------------------------------------------------------
-    col1   = np.kron([1, 1], np.arange(M - 1))
-    temp1  = np.kron([1, M + 1], np.ones(M - 1))
-    temp2  = np.kron([M + 1, M], np.ones(M - 1))
+    col1 = np.kron([1, 1], np.arange(M - 1))
+    temp1 = np.kron([1, M + 1], np.ones(M - 1))
+    temp2 = np.kron([M + 1, M], np.ones(M - 1))
     onecol = np.stack([col1, col1 + temp1, col1 + temp2], axis=1).astype(int)
 
     triangulation = np.tile(onecol, (N - 1, 1))
@@ -427,27 +417,35 @@ def conformal_map_indep_fixed_diagonals(
     ridx = np.repeat(np.arange(triangleCount), 3)
     cidx = triangulation.ravel()
 
-    Mreal = coo_matrix((ws_real.ravel(), (ridx, cidx)),
-                       shape=(triangleCount, vertexCount)).tocsr()
-    Mimag = coo_matrix((ws_imag.ravel(), (ridx, cidx)),
-                       shape=(triangleCount, vertexCount)).tocsr()
+    Mreal = coo_matrix(
+        (ws_real.ravel(), (ridx, cidx)), shape=(triangleCount, vertexCount)
+    ).tocsr()
+    Mimag = coo_matrix(
+        (ws_imag.ravel(), (ridx, cidx)), shape=(triangleCount, vertexCount)
+    ).tocsr()
 
     # -----------------------------------------------------------
     # 3. linear solver helper
     # -----------------------------------------------------------
-    def solve_mapping(fixed_pts: list[int],
-                      fixed_vals: np.ndarray,
-                      free_pts: np.ndarray) -> np.ndarray:
+    def solve_mapping(
+        fixed_pts: list[int], fixed_vals: np.ndarray, free_pts: np.ndarray
+    ) -> np.ndarray:
 
-        A = vstack([
-            hstack([Mreal[:, free_pts], -Mimag[:, free_pts]]),
-            hstack([Mimag[:, free_pts],  Mreal[:, free_pts]])
-        ])
+        A = vstack(
+            [
+                hstack([Mreal[:, free_pts], -Mimag[:, free_pts]]),
+                hstack([Mimag[:, free_pts], Mreal[:, free_pts]]),
+            ]
+        )
 
-        b_real = Mreal[:, fixed_pts] @ fixed_vals[:, 0] - \
-                 Mimag[:, fixed_pts] @ fixed_vals[:, 1]
-        b_imag = Mimag[:, fixed_pts] @ fixed_vals[:, 0] + \
-                 Mreal[:, fixed_pts] @ fixed_vals[:, 1]
+        b_real = (
+            Mreal[:, fixed_pts] @ fixed_vals[:, 0]
+            - Mimag[:, fixed_pts] @ fixed_vals[:, 1]
+        )
+        b_imag = (
+            Mimag[:, fixed_pts] @ fixed_vals[:, 0]
+            + Mreal[:, fixed_pts] @ fixed_vals[:, 1]
+        )
         b = -np.concatenate([b_real, b_imag])
 
         # AtA is symmetric positive definite, so a sparse Cholesky applies and is
@@ -458,9 +456,9 @@ def conformal_map_indep_fixed_diagonals(
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
-        mapped[fixed_pts]    = fixed_vals
-        mapped[free_pts, 0]  = sol[:nf]
-        mapped[free_pts, 1]  = sol[nf:]
+        mapped[fixed_pts] = fixed_vals
+        mapped[free_pts, 0] = sol[:nf]
+        mapped[free_pts, 1] = sol[nf:]
         return mapped
 
     # -----------------------------------------------------------
@@ -468,19 +466,24 @@ def conformal_map_indep_fixed_diagonals(
     # -----------------------------------------------------------
     diag_scale = M / np.sqrt(M**2 + N**2)
 
-    main_fixed_pts  = [0, vertexCount - 1]
-    main_fixed_vals = np.array([
-        [xpos_new[0], ypos_new[0]],
-        [xpos_new[0] + mainDiagDist * diag_scale,
-         ypos_new[0] + mainDiagDist * diag_scale * N / M]
-    ])
+    main_fixed_pts = [0, vertexCount - 1]
+    main_fixed_vals = np.array(
+        [
+            [xpos_new[0], ypos_new[0]],
+            [
+                xpos_new[0] + mainDiagDist * diag_scale,
+                ypos_new[0] + mainDiagDist * diag_scale * N / M,
+            ],
+        ]
+    )
 
-    skew_fixed_pts  = [M - 1, vertexCount - M]
-    skew_fixed_vals = np.array([
-        [xpos_new[0] + skewDiagDist * diag_scale, ypos_new[0]],
-        [xpos_new[0],
-         ypos_new[0] + skewDiagDist * diag_scale * N / M]
-    ])
+    skew_fixed_pts = [M - 1, vertexCount - M]
+    skew_fixed_vals = np.array(
+        [
+            [xpos_new[0] + skewDiagDist * diag_scale, ypos_new[0]],
+            [xpos_new[0], ypos_new[0] + skewDiagDist * diag_scale * N / M],
+        ]
+    )
 
     # -----------------------------------------------------------
     # 5. branch on anchor count
@@ -488,17 +491,17 @@ def conformal_map_indep_fixed_diagonals(
     if n_anchors == 4:
         # --- historical behaviour: two solves, then average ----------
         free_main = np.setdiff1d(np.arange(vertexCount), main_fixed_pts)
-        map_main  = solve_mapping(main_fixed_pts, main_fixed_vals, free_main)
+        map_main = solve_mapping(main_fixed_pts, main_fixed_vals, free_main)
 
         free_skew = np.setdiff1d(np.arange(vertexCount), skew_fixed_pts)
-        map_skew  = solve_mapping(skew_fixed_pts, skew_fixed_vals, free_skew)
+        map_skew = solve_mapping(skew_fixed_pts, skew_fixed_vals, free_skew)
 
         mappedPositions = 0.5 * (map_main + map_skew)
 
     else:
         # --- single solve with additional anchors -------------------
-        fixed_pts  : list[int]       = main_fixed_pts + skew_fixed_pts
-        fixed_vals : list[np.ndarray] = [main_fixed_vals, skew_fixed_vals]
+        fixed_pts: list[int] = main_fixed_pts + skew_fixed_pts
+        fixed_vals: list[np.ndarray] = [main_fixed_vals, skew_fixed_vals]
 
         # add mid-lines (8 anchors) and quarter-lines (16 anchors)
         if n_anchors >= 8:
@@ -510,36 +513,44 @@ def conformal_map_indep_fixed_diagonals(
 
             # horizontals
             for c in mid_cols:
-                idx_left  = 0       + c * M
+                idx_left = 0 + c * M
                 idx_right = (M - 1) + c * M
                 dz = VZmesh[M - 1, c] - VZmesh[0, c]
-                length = np.sqrt((xpos[-1] - xpos[0])**2 + dz**2)
+                length = np.sqrt((xpos[-1] - xpos[0]) ** 2 + dz**2)
                 fixed_pts += [idx_left, idx_right]
-                fixed_vals.append(np.array([
-                    [xpos_new[0],                 ypos_new[c]],
-                    [xpos_new[0] + length,        ypos_new[c]]
-                ]))
+                fixed_vals.append(
+                    np.array(
+                        [
+                            [xpos_new[0], ypos_new[c]],
+                            [xpos_new[0] + length, ypos_new[c]],
+                        ]
+                    )
+                )
 
             # verticals
             for r in mid_rows:
-                idx_top    = r + 0 * M
+                idx_top = r + 0 * M
                 idx_bottom = r + (N - 1) * M
                 dz = VZmesh[r, N - 1] - VZmesh[r, 0]
-                length = np.sqrt((ypos[-1] - ypos[0])**2 + dz**2)
+                length = np.sqrt((ypos[-1] - ypos[0]) ** 2 + dz**2)
                 fixed_pts += [idx_top, idx_bottom]
-                fixed_vals.append(np.array([
-                    [xpos_new[r], ypos_new[0]],
-                    [xpos_new[r], ypos_new[0] + length]
-                ]))
+                fixed_vals.append(
+                    np.array(
+                        [
+                            [xpos_new[r], ypos_new[0]],
+                            [xpos_new[r], ypos_new[0] + length],
+                        ]
+                    )
+                )
 
         fixed_vals = np.vstack(fixed_vals)
-        free_pts   = np.setdiff1d(np.arange(vertexCount), fixed_pts)
+        free_pts = np.setdiff1d(np.arange(vertexCount), fixed_pts)
         mappedPositions = solve_mapping(fixed_pts, fixed_vals, free_pts)
 
     return mappedPositions
 
 
-def align_mapped_surface(    
+def align_mapped_surface(
     thisVZminmesh: np.ndarray,
     thisVZmaxmesh: np.ndarray,
     mappedMinPositions: np.ndarray,
@@ -547,7 +558,7 @@ def align_mapped_surface(
     xborders: list[int],
     yborders: list[int],
     conformal_jump: int = 1,
-    patch_size: int = 21
+    patch_size: int = 21,
 ) -> np.ndarray:
     """
     Shifts the second mapped surface (mappedMaxPositions) so that its local
@@ -560,10 +571,10 @@ def align_mapped_surface(
     thisVZmaxmesh : np.ndarray
         2D array of shape (X, Y), representing the second (maximum) surface.
     mappedMinPositions : np.ndarray
-        2D array of shape (X*Y, 2), the conformally mapped coordinates 
+        2D array of shape (X*Y, 2), the conformally mapped coordinates
         corresponding to the min surface.
     mappedMaxPositions : np.ndarray
-        2D array of shape (X*Y, 2), the conformally mapped coordinates 
+        2D array of shape (X*Y, 2), the conformally mapped coordinates
         corresponding to the max surface.
     xborders : list of int
         [x_min, x_max] bounding indices used to focus the alignment region.
@@ -577,13 +588,13 @@ def align_mapped_surface(
     Returns
     -------
     mappedMaxPositions : np.ndarray
-        Updated 2D array of shape (X*Y, 2) for the max surface, 
+        Updated 2D array of shape (X*Y, 2) for the max surface,
         after alignment to the min surface.
 
     Notes
     -----
     This step finds an offset (shift in x and y) that best aligns local slope
-    features from the two surfaces, by comparing gradients in a restricted region 
+    features from the two surfaces, by comparing gradients in a restricted region
     and choosing the position with minimal combined gradient magnitude.
     """
     patch_size = int(np.ceil(patch_size / conformal_jump))
@@ -592,8 +603,12 @@ def align_mapped_surface(
     pad_val_min = 10 * np.max(thisVZminmesh)
     pad_val_max = 10 * np.max(thisVZmaxmesh)
 
-    VZminmesh_padded = np.pad(thisVZminmesh, ((0, 1), (0, 1)), constant_values=pad_val_min)
-    VZmaxmesh_padded = np.pad(thisVZmaxmesh, ((0, 1), (0, 1)), constant_values=pad_val_max)
+    VZminmesh_padded = np.pad(
+        thisVZminmesh, ((0, 1), (0, 1)), constant_values=pad_val_min
+    )
+    VZmaxmesh_padded = np.pad(
+        thisVZmaxmesh, ((0, 1), (0, 1)), constant_values=pad_val_max
+    )
 
     # Gradient differences (dx + i*dy)
     dmin_dx = np.diff(VZminmesh_padded, axis=0)[:, :-1]
@@ -608,14 +623,18 @@ def align_mapped_surface(
     x1, x2 = xborders
     y1, y2 = yborders
 
-    dMinSurface_roi = dMinSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
-    dMaxSurface_roi = dMaxSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
+    dMinSurface_roi = dMinSurface[
+        x1 : x2 + 1 : conformal_jump, y1 : y2 + 1 : conformal_jump
+    ]
+    dMaxSurface_roi = dMaxSurface[
+        x1 : x2 + 1 : conformal_jump, y1 : y2 + 1 : conformal_jump
+    ]
 
     combined_slope = dMinSurface_roi + dMaxSurface_roi
 
     # Patch cost = sum of local gradients over patch
     kernel = np.ones((patch_size, patch_size))
-    patch_costs = convolve2d(combined_slope, kernel, mode='valid')
+    patch_costs = convolve2d(combined_slope, kernel, mode="valid")
 
     # # Map back to flattened index in 2D mesh
     # row, col are 0-based from Python
@@ -647,21 +666,21 @@ def align_mapped_surface(
 
 
 def build_mapping(
-    on_sac_surface: np.ndarray, # original `thisVZminmesh`  (ON‑Starburst layer)
-    off_sac_surface: np.ndarray, # original `thisVZmaxmesh`  (OFF‑Starburst layer)
+    on_sac_surface: np.ndarray,  # original `thisVZminmesh`  (ON‑Starburst layer)
+    off_sac_surface: np.ndarray,  # original `thisVZmaxmesh`  (OFF‑Starburst layer)
     bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
-    conformal_jump: int = 1, # original `conformalJump`
-    n_anchors: int = 16, # number of anchor points for conformal mapping, options: 4, 8 or 16
+    conformal_jump: int = 1,  # original `conformalJump`
+    n_anchors: int = 16,  # number of anchor points for conformal mapping, options: 4, 8 or 16
     alignment_patch_size: int = 21,  # size of the local patch for alignment
     *,
     verbose: bool = False,
-    backward_compatible: bool = False  # for MATLAB compatibility
+    backward_compatible: bool = False,  # for MATLAB compatibility
 ) -> dict:
     """
-    Create a 2D conformal map that **flattens** the ON‑ and OFF‑Starburst Amacrine Cell (SAC) 
+    Create a 2D conformal map that **flattens** the ON‑ and OFF‑Starburst Amacrine Cell (SAC)
     layers onto a common plane so their geometry can later be imposed on retinal arbors.
 
-    This is a refactored port of MATLAB **`calcWarpedSACsurfaces`**.  
+    This is a refactored port of MATLAB **`calcWarpedSACsurfaces`**.
     The mathematics and return values are preserved exactly; only names and documentation are clearer.
 
     Workflow
@@ -685,8 +704,8 @@ def build_mapping(
     n_anchors : int, default 16
         Number of anchor points used for the conformal mapping.
         Options are 4, 8 (default), or 16 anchors:
-            - 4   → original behaviour (two separate solves, then average)  
-            - 8   → add horizontal/vertical mid-lines (single solve)  
+            - 4   → original behaviour (two separate solves, then average)
+            - 8   → add horizontal/vertical mid-lines (single solve)
             - 16  → also add the quarter-lines (single solve)
     verbose : bool, default False
         If *True*, print timing information.
@@ -707,27 +726,37 @@ def build_mapping(
     """
 
     if backward_compatible:
-        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1 # Convert to 0-based indexing
+        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1  # Convert to 0-based indexing
     else:
         xmin, xmax, ymin, ymax = np.asarray(bounds)
 
     nx, ny = off_sac_surface.shape
-    sampled_x_idx = np.arange(max(xmin - 1, 0),  min(xmax + 1, nx - 1) + 1,
-                    conformal_jump, dtype=int)
-    sampled_y_idx = np.arange(max(ymin - 1, 0),  min(ymax + 1, ny - 1) + 1,
-                    conformal_jump, dtype=int)
+    sampled_x_idx = np.arange(
+        max(xmin - 1, 0), min(xmax + 1, nx - 1) + 1, conformal_jump, dtype=int
+    )
+    sampled_y_idx = np.arange(
+        max(ymin - 1, 0), min(ymax + 1, ny - 1) + 1, conformal_jump, dtype=int
+    )
 
     # probably not necessary but better ensure that sampled_x_idx, sampled_y_idx are within bounds
-    sampled_x_idx = sampled_x_idx[(sampled_x_idx >= 0) & (sampled_x_idx < on_sac_surface.shape[0])]
-    sampled_y_idx = sampled_y_idx[(sampled_y_idx >= 0) & (sampled_y_idx < on_sac_surface.shape[1])]
+    sampled_x_idx = sampled_x_idx[
+        (sampled_x_idx >= 0) & (sampled_x_idx < on_sac_surface.shape[0])
+    ]
+    sampled_y_idx = sampled_y_idx[
+        (sampled_y_idx >= 0) & (sampled_y_idx < on_sac_surface.shape[1])
+    ]
 
-    on_subsampled  =  on_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
+    on_subsampled = on_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
     off_subsampled = off_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
 
     # calculate the traveling distances on the diagonals of the two SAC surfaces
     start_time = time.time()
-    main_diag_dist_on, skew_diag_dist_on = calculate_diag_length(sampled_x_idx, sampled_y_idx, on_subsampled)
-    main_diag_dist_off, skew_diag_dist_off = calculate_diag_length(sampled_x_idx, sampled_y_idx, off_subsampled)
+    main_diag_dist_on, skew_diag_dist_on = calculate_diag_length(
+        sampled_x_idx, sampled_y_idx, on_subsampled
+    )
+    main_diag_dist_off, skew_diag_dist_off = calculate_diag_length(
+        sampled_x_idx, sampled_y_idx, off_subsampled
+    )
 
     main_diag_dist = np.mean([main_diag_dist_on, main_diag_dist_off])
     skew_diag_dist = np.mean([skew_diag_dist_on, skew_diag_dist_off])
@@ -737,8 +766,13 @@ def build_mapping(
         print("-> mapping ON (min) surface...")
         start_time = time.time()
     mapped_on = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled,
-        n_anchors=n_anchors, backward_compatible=backward_compatible,
+        float(main_diag_dist),
+        float(skew_diag_dist),
+        sampled_x_idx,
+        sampled_y_idx,
+        on_subsampled,
+        n_anchors=n_anchors,
+        backward_compatible=backward_compatible,
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
@@ -747,8 +781,13 @@ def build_mapping(
         print("-> mapping OFF (max) surface...")
         start_time = time.time()
     mapped_off = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled,
-        n_anchors=n_anchors, backward_compatible=backward_compatible,
+        float(main_diag_dist),
+        float(skew_diag_dist),
+        sampled_x_idx,
+        sampled_y_idx,
+        off_subsampled,
+        n_anchors=n_anchors,
+        backward_compatible=backward_compatible,
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
@@ -758,21 +797,29 @@ def build_mapping(
 
     # Align OFF map to ON map (patch matching)
     map_off_aligned = align_mapped_surface(
-        on_sac_surface, off_sac_surface,
-        mapped_on, mapped_off,
-        x_limits, y_limits, conformal_jump, alignment_patch_size
+        on_sac_surface,
+        off_sac_surface,
+        mapped_on,
+        mapped_off,
+        x_limits,
+        y_limits,
+        conformal_jump,
+        alignment_patch_size,
     )
 
     return {
         "mapped_on": mapped_on,  # formerly `mappedMinPositions`
-        "mapped_off": map_off_aligned, # formerly `mappedMaxPositions`
-        "main_diag_dist": main_diag_dist, # same as MATLAB `mainDiagDist`
-        "skew_diag_dist": skew_diag_dist, # same as MATLAB `skewDiagDist`
-        "sampled_x_idx": sampled_x_idx, # formerly `thisx`
-        "sampled_y_idx": sampled_y_idx, # formerly `thisy`
-        "on_sac_surface": on_sac_surface, # formerly `thisVZminmesh`
-        "off_sac_surface": off_sac_surface, # formerly `thisVZmaxmesh`
+        "mapped_off": map_off_aligned,  # formerly `mappedMaxPositions`
+        "main_diag_dist": main_diag_dist,  # same as MATLAB `mainDiagDist`
+        "skew_diag_dist": skew_diag_dist,  # same as MATLAB `skewDiagDist`
+        "sampled_x_idx": sampled_x_idx,  # formerly `thisx`
+        "sampled_y_idx": sampled_y_idx,  # formerly `thisy`
+        "on_sac_surface": on_sac_surface,  # formerly `thisVZminmesh`
+        "off_sac_surface": off_sac_surface,  # formerly `thisVZmaxmesh`
         "n_anchors": n_anchors,
         "conformal_jump": conformal_jump,
-        "meta": {"mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"), "pywarper_version": _PYWARPER_VERSION}
+        "meta": {
+            "mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "pywarper_version": _PYWARPER_VERSION,
+        },
     }

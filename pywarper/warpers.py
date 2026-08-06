@@ -759,7 +759,9 @@ def gridder1d(
 # =====================================================================
 
 
-def _split_path(path: list[int], xyz: np.ndarray, split_length: float) -> list[list[int]]:
+def _split_path(
+    path: list[int], xyz: np.ndarray, split_length: float
+) -> list[list[int]]:
     """
     Divide an ordered node path into n roughly equal sub-paths.
 
@@ -781,13 +783,15 @@ def _split_path(path: list[int], xyz: np.ndarray, split_length: float) -> list[l
     cut_idx = [0]
     for t in targets[1:-1]:
         idx = int(np.argmin(np.abs(cum - t)))
-        if idx > cut_idx[-1]:       # avoid duplicate split points
+        if idx > cut_idx[-1]:  # avoid duplicate split points
             cut_idx.append(idx)
     cut_idx.append(len(path) - 1)
 
-    return [path[cut_idx[i]: cut_idx[i + 1] + 1]
-            for i in range(len(cut_idx) - 1)
-            if cut_idx[i + 1] > cut_idx[i]]
+    return [
+        path[cut_idx[i] : cut_idx[i + 1] + 1]
+        for i in range(len(cut_idx) - 1)
+        if cut_idx[i + 1] > cut_idx[i]
+    ]
 
 
 def _orient_classify(
@@ -994,19 +998,23 @@ def get_z_profile(
 
         vert_vals, tip_mask = _orient_classify(skel, branch_split_length)
         # vertical: not a tip AND branch |dz|/L > threshold
-        mask_v = np.isfinite(vert_vals) & (vert_vals > orientation_threshold) & ~tip_mask
+        mask_v = (
+            np.isfinite(vert_vals) & (vert_vals > orientation_threshold) & ~tip_mask
+        )
 
         v_hist, v_dist = _profile(density * mask_v)
         h_hist, h_dist = _profile(density * ~mask_v)
 
-        result.update({
-            "vlength_distribution": v_dist,
-            "vlength_histogram": v_hist,
-            "hlength_distribution": h_dist,
-            "hlength_histogram": h_hist,
-            "orientation_threshold": orientation_threshold,
-            "branch_split_length": branch_split_length,
-        })
+        result.update(
+            {
+                "vlength_distribution": v_dist,
+                "vlength_histogram": v_hist,
+                "hlength_distribution": h_dist,
+                "hlength_histogram": h_hist,
+                "orientation_threshold": orientation_threshold,
+                "branch_split_length": branch_split_length,
+            }
+        )
 
     return result
 

@@ -12,25 +12,24 @@ import pywarper.stats as stats
 # --------------------------------------------------------------------------- #
 NODES = np.array(
     [
-        [0.0, 0.0, 0.0],   # 1 – soma
-        [0.0, 1.0, 0.0],   # 2
-        [1.0, 1.0, 0.0],   # 3
-        [1.0, 0.0, 0.0],   # 4
-        [0.5, 1.5, 0.0],   # 5
+        [0.0, 0.0, 0.0],  # 1 – soma
+        [0.0, 1.0, 0.0],  # 2
+        [1.0, 1.0, 0.0],  # 3
+        [1.0, 0.0, 0.0],  # 4
+        [0.5, 1.5, 0.0],  # 5
     ],
     dtype=float,
 )
 EDGES = np.array(
     [
-        [1, -1],   # soma root
-        [2,  1],
-        [3,  2],
-        [4,  3],
-        [5,  2],
+        [1, -1],  # soma root
+        [2, 1],
+        [3, 2],
+        [4, 3],
+        [5, 2],
     ],
     dtype=int,
 )
-
 
 
 # --------------------------------------------------------------------------- #
@@ -50,10 +49,10 @@ def test_get_convex_hull_square():
 # Center-of-mass and soma features                                            #
 # --------------------------------------------------------------------------- #
 def test_center_of_mass_and_asymmetry():
-    x = np.linspace(0, 2, 3)          # 0, 1, 2 µm
-    y = np.linspace(0, 1, 2)          # 0, 1 µm
+    x = np.linspace(0, 2, 3)  # 0, 1, 2 µm
+    y = np.linspace(0, 1, 2)  # 0, 1 µm
     xv, yv = np.meshgrid(x, y, indexing="ij")
-    xy_dist = np.ones_like(xv)        # uniform “mass”
+    xy_dist = np.ones_like(xv)  # uniform “mass”
     com_xy = stats.get_xy_center_of_mass(x, y, xy_dist)
     assert tuple(np.round(com_xy, 6)) == (1.0, 0.5)
 
@@ -88,12 +87,17 @@ def test_dendritic_length_and_median_segment_len():
 
 def test_average_tortuosity():
     # Mix of straight and one bent segment → mean tortuosity ≈ 1.1381
-    assert pytest.approx(stats.get_average_tortuosity(NODES, EDGES)) == 1.1380711874576983
+    assert (
+        pytest.approx(stats.get_average_tortuosity(NODES, EDGES)) == 1.1380711874576983
+    )
 
 
 def test_typical_radius():
     com_xy = np.array([0.5, 0.7])
-    assert pytest.approx(stats.get_typical_radius(NODES, EDGES, com_xy)) == 0.500355212883135
+    assert (
+        pytest.approx(stats.get_typical_radius(NODES, EDGES, com_xy))
+        == 0.500355212883135
+    )
 
 
 def test_average_angle_simple_bend():
