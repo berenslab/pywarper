@@ -101,12 +101,9 @@ def test_summary_reports_the_fit(chat_band, gam_surface):
     gridfit = fit_sac_surface(
         x=chat_band["x"], y=chat_band["y"], z=chat_band["z"], smoothness=15, stride=3
     )
-    assert gridfit.summary == {
-        "method": "gridfit",
-        "smoothness": 15,
-        "smoothness_auto": False,
-        "stride": 3,
-    }
+    # At a fixed smoothness the summary is exactly what it has always been:
+    # the search-only keys must not leak into the default path.
+    assert gridfit.summary == {"method": "gridfit", "smoothness": 15, "stride": 3}
 
 
 def test_auto_smoothness_reports_what_it_chose(chat_band):
@@ -126,7 +123,7 @@ def test_auto_smoothness_reports_what_it_chose(chat_band):
     pinned = fit_sac_surface(
         x=chat_band["x"], y=chat_band["y"], z=chat_band["z"], smoothness=chosen
     )
-    assert pinned.summary["smoothness_auto"] is False
+    assert "smoothness_auto" not in pinned.summary
     np.testing.assert_allclose(pinned.zmesh, auto.zmesh)
 
 

@@ -370,23 +370,26 @@ def _fit_sac_surface_gridfit(
         xnodes, ynodes, np.asarray(g.zgrid), xmax, ymax, backward_compatible
     )
 
-    # Under smoothness="auto" the value that shaped the surface is the one
-    # gridfit selected, not the string the caller passed, so report that -- a
-    # summary saying "auto" would not let anyone reproduce the fit.
-    selected = g.smoothness_ if g.smoothness_ is not None else smoothness
-    auto = isinstance(smoothness, str)
     summary: dict[str, Any] = {
         "method": "gridfit",
-        "smoothness": selected,
-        "smoothness_auto": auto,
+        "smoothness": smoothness,
         "stride": stride,
     }
-    if auto:
-        # Under a search, `gamma` and the resulting edf are what the number
-        # above means; recording only the number would not describe the fit.
-        # Plain floats, not numpy scalars: this summary is carried into the
-        # mapping's metadata and gets written out from there.
-        summary["smoothness"] = float(selected)
+    if isinstance(smoothness, str):
+        # Under a search the value that shaped the surface is the one gridfit
+        # selected, not the string the caller passed -- a summary saying "auto"
+        # would not let anyone reproduce the fit. `gamma` and the resulting edf
+        # are what that number means, so they are recorded beside it, and
+        # `smoothness_auto` marks it as chosen rather than supplied.
+        #
+        # These keys appear only under a search: at a fixed smoothness the
+        # summary stays exactly what it has always been, so nothing reading it
+        # has to learn about a search it did not ask for.
+        #
+        # Plain floats, not numpy scalars: this is carried into the mapping's
+        # metadata and gets written out from there.
+        summary["smoothness"] = float(g.smoothness_)
+        summary["smoothness_auto"] = True
         summary["gamma"] = float(GAMMA_DEFAULT if gamma is None else gamma)
         summary["edf"] = float(g.edf_)
     return SacSurface(
