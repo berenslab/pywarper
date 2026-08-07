@@ -14,7 +14,7 @@ dependencies = [
     "numpy>=2.2.0",
     "pygridfit>=0.2.0",
     "scipy>=1.15.0",
-    "skeliner>=0.2.8",
+    "skeliner>=0.3.0",
     "trimesh>=4.0",
 ]
 license = "GPL-3.0-or-later"
