@@ -99,7 +99,33 @@ def test_summary_reports_the_fit(chat_band, gam_surface):
     gridfit = fit_sac_surface(
         x=chat_band["x"], y=chat_band["y"], z=chat_band["z"], smoothness=15, stride=3
     )
-    assert gridfit.summary == {"method": "gridfit", "smoothness": 15, "stride": 3}
+    assert gridfit.summary == {
+        "method": "gridfit",
+        "smoothness": 15,
+        "smoothness_auto": False,
+        "stride": 3,
+    }
+
+
+def test_auto_smoothness_reports_what_it_chose(chat_band):
+    """Under smoothness="auto" the summary must carry the selected number.
+
+    Reporting the string back would leave no record of what actually shaped the
+    surface, so a fit could not be reproduced from its own summary.
+    """
+    auto = fit_sac_surface(
+        x=chat_band["x"], y=chat_band["y"], z=chat_band["z"], smoothness="auto"
+    )
+    assert auto.summary["smoothness_auto"] is True
+    chosen = auto.summary["smoothness"]
+    assert isinstance(chosen, float) and chosen > 0
+
+    # and refitting at that number reproduces the surface it came from
+    pinned = fit_sac_surface(
+        x=chat_band["x"], y=chat_band["y"], z=chat_band["z"], smoothness=chosen
+    )
+    assert pinned.summary["smoothness_auto"] is False
+    np.testing.assert_allclose(pinned.zmesh, auto.zmesh)
 
 
 def test_gridfit_only_arguments_are_refused(chat_band):

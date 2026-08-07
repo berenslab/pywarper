@@ -101,7 +101,7 @@ def fit_sac_surface(
     ymax: int | float | None = None,
     method: str = "gridfit",
     stride: int | None = None,
-    smoothness: int | None = None,
+    smoothness: int | float | str | None = None,
     k: int | tuple[int, int] | None = None,
     bs: str | None = None,
     extend: str = "warning",
@@ -147,9 +147,14 @@ def fit_sac_surface(
         Node spacing of the ``"gridfit"`` fit, before resampling to the unit grid.
         Defaults to 3, matching MATLAB. Rejected under ``"gam"``, which has no
         coarse grid.
-    smoothness : int, optional
+    smoothness : int, float or "auto", optional
         Amount of smoothing applied by ``"gridfit"``. Defaults to 1, matching
-        MATLAB. Rejected under ``"gam"``, which selects its own by REML.
+        MATLAB. Pass ``"auto"`` to have gridfit choose it from the data by
+        generalized cross-validation instead; the value it settled on is
+        reported in `summary` under ``"smoothness"``, and ``"smoothness_auto"``
+        records that it was selected rather than supplied. ``"auto"`` requires
+        the default ``solver="normal"``. Rejected under ``"gam"``, which selects
+        its own smoothing parameter by REML.
     k : int or (int, int), optional
         ``"gam"`` only. Basis dimension of the smooth -- the model's complexity,
         unrelated to the output grid size. Defaults to 100. Under ``bs="te"`` it
@@ -198,12 +203,17 @@ def fit_sac_surface(
     Which to use. ``"gridfit"`` stays the default: it reproduces published
     results, it is the path the MATLAB parity test pins, and on the SAC bands it
     costs ~0.4 s per surface against ~3 s for ``"gam"``, which matters across a
-    corpus. Reach for ``"gam"`` when the smoothness should come from the data
-    rather than from a hand-set constant, when per-node standard errors are
-    wanted, or when the resampling step is the thing you want gone -- on these
-    bands its interpolation loss is about as large as the whole difference
-    between the two fitters. Where both are supported by data they agree to
-    rms ~1 voxel.
+    corpus. Reach for ``"gam"`` when per-node standard errors are wanted, or
+    when the resampling step is the thing you want gone -- on these bands its
+    interpolation loss is about as large as the whole difference between the
+    two fitters. Where both are supported by data they agree to rms ~1 voxel.
+
+    Wanting the smoothness to come from the data rather than a hand-set constant
+    is no longer a reason to pick between them: ``smoothness="auto"`` gives
+    ``"gridfit"`` a GCV search, at a few times the cost of one fixed fit. The two
+    criteria are not the same object, though -- GCV on gridfit's node grid and
+    REML on the GAM's basis will not agree on a number, and neither is
+    convertible into the other.
 
     Extrapolation. Both fitters return a value over the whole lattice, and that is
     deliberate -- it is the property gridfit is built for, filling the corners
@@ -293,7 +303,7 @@ def _fit_sac_surface_gridfit(
     ymax: int | float,
     *,
     stride: int | None,
-    smoothness: int | None,
+    smoothness: int | float | str | None,
     extend: str,
     interp: str,
     regularizer: str,
@@ -341,11 +351,20 @@ def _fit_sac_surface_gridfit(
         xnodes, ynodes, np.asarray(g.zgrid), xmax, ymax, backward_compatible
     )
 
+    # Under smoothness="auto" the value that shaped the surface is the one
+    # gridfit selected, not the string the caller passed, so report that -- a
+    # summary saying "auto" would not let anyone reproduce the fit.
+    selected = g.smoothness_ if g.smoothness_ is not None else smoothness
     return SacSurface(
         zmesh=zmesh,
         xmesh=xmesh,
         ymesh=ymesh,
-        summary={"method": "gridfit", "smoothness": smoothness, "stride": stride},
+        summary={
+            "method": "gridfit",
+            "smoothness": selected,
+            "smoothness_auto": isinstance(smoothness, str),
+            "stride": stride,
+        },
     )
 
 

@@ -29,9 +29,6 @@ dev = [
     "watermark>=2.5.0",
 ]
 
-[tool.uv.sources]
-pygridfit = { git = "https://github.com/berenslab/pygridfit.git", branch = "main" }
-
 [tool.ruff]
 line-length = 88
 extend-exclude = ["notebooks"]
