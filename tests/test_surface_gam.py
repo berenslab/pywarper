@@ -3,6 +3,8 @@
 import numpy as np
 import pytest
 
+from pygridfit.autosmooth import GAMMA_DEFAULT
+
 from pywarper.surface import SacSurface, fit_sac_surface
 from pywarper.utils import read_sumbul_et_al_chat_bands
 
@@ -128,10 +130,43 @@ def test_auto_smoothness_reports_what_it_chose(chat_band):
     np.testing.assert_allclose(pinned.zmesh, auto.zmesh)
 
 
+def test_auto_smoothness_records_the_gamma_that_shaped_it(chat_band):
+    """The selected smoothness only means something alongside its gamma.
+
+    gamma sets the length scale GCV optimises for, so two searches differing
+    only in gamma return different numbers for the same data. A summary
+    carrying the number without the gamma would not describe the fit.
+    """
+    x, y, z = chat_band["x"], chat_band["y"], chat_band["z"]
+    default = fit_sac_surface(x=x, y=y, z=z, smoothness="auto")
+    rougher = fit_sac_surface(x=x, y=y, z=z, smoothness="auto", gamma=4.0)
+
+    assert default.summary["gamma"] == GAMMA_DEFAULT
+    assert rougher.summary["gamma"] == 4.0
+    assert default.summary["edf"] > 0
+
+    # a larger gamma penalises degrees of freedom harder, so it must not come
+    # back with a rougher fit than the default did
+    assert rougher.summary["smoothness"] >= default.summary["smoothness"]
+    assert rougher.summary["edf"] <= default.summary["edf"]
+
+
+def test_gamma_without_a_search_is_refused(chat_band):
+    """gamma steers a search; at a fixed smoothness there is none to steer."""
+    x, y, z = chat_band["x"], chat_band["y"], chat_band["z"]
+    with pytest.raises(ValueError, match="gamma"):
+        fit_sac_surface(x=x, y=y, z=z, smoothness=15, gamma=2.0)
+
+
 def test_gridfit_only_arguments_are_refused(chat_band):
     """A smoothness the GAM cannot honour is an error, not a silent no-op."""
     x, y, z = chat_band["x"], chat_band["y"], chat_band["z"]
-    for kwargs in ({"smoothness": 15}, {"stride": 3}, {"smoothness": 15, "stride": 3}):
+    for kwargs in (
+        {"smoothness": 15},
+        {"stride": 3},
+        {"gamma": 2.0},
+        {"smoothness": 15, "stride": 3},
+    ):
         with pytest.raises(ValueError, match="gridfit setting"):
             fit_sac_surface(x=x, y=y, z=z, method="gam", **kwargs)
 

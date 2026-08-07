@@ -31,6 +31,7 @@ from typing import Any, Iterator
 import numpy as np
 from hea.sparse import cho_solve
 from pygridfit import GamFit, GridFit
+from pygridfit.autosmooth import GAMMA_DEFAULT
 from scipy.interpolate import RegularGridInterpolator
 from scipy.signal import convolve2d
 from scipy.sparse import coo_matrix, hstack, vstack
@@ -39,7 +40,7 @@ _PYWARPER_VERSION = _metadata.version("pywarper")
 
 #: Arguments that belong to exactly one fitter, keyed by the fitter that owns them.
 _FITTER_ONLY_SETTINGS: dict[str, tuple[str, ...]] = {
-    "gridfit": ("stride", "smoothness"),
+    "gridfit": ("stride", "smoothness", "gamma"),
     "gam": ("k", "bs"),
 }
 
@@ -79,8 +80,11 @@ class SacSurface:
         `se`, and regions the annotation never covered are not flagged here.
     summary : dict
         What the fitter settled on -- basis size, effective degrees of freedom
-        and selected smoothing parameter under ``"gam"``; the supplied
-        `smoothness` and node stride under ``"gridfit"``.
+        and selected smoothing parameter under ``"gam"``; the node stride and the
+        `smoothness` under ``"gridfit"``, which is the caller's value unless
+        ``"smoothness_auto"`` says it was selected from the data, in which case
+        the `gamma` that shaped the search and the resulting `edf` are recorded
+        alongside it.
     """
 
     zmesh: np.ndarray
@@ -102,6 +106,7 @@ def fit_sac_surface(
     method: str = "gridfit",
     stride: int | None = None,
     smoothness: int | float | str | None = None,
+    gamma: float | None = None,
     k: int | tuple[int, int] | None = None,
     bs: str | None = None,
     extend: str = "warning",
@@ -155,6 +160,15 @@ def fit_sac_surface(
         records that it was selected rather than supplied. ``"auto"`` requires
         the default ``solver="normal"``. Rejected under ``"gam"``, which selects
         its own smoothing parameter by REML.
+    gamma : float, optional
+        ``"gridfit"`` under ``smoothness="auto"`` only. How much the GCV criterion
+        inflates the effective degrees of freedom, which is really a choice of the
+        length scale the selection is optimal for. Defaults to gridfit's 1.2,
+        calibrated to predicting across a gap of a few node spacings; raise it when
+        the surface has to carry well past its data. The SAC bands want the
+        default -- their annotated region has essentially no interior gaps, so the
+        short scale is the operative one. Passing it at a fixed `smoothness` is an
+        error rather than a no-op, and it is rejected under ``"gam"``.
     k : int or (int, int), optional
         ``"gam"`` only. Basis dimension of the smooth -- the model's complexity,
         unrelated to the output grid size. Defaults to 100. Under ``bs="te"`` it
@@ -236,7 +250,9 @@ def fit_sac_surface(
     if method not in _FITTER_ONLY_SETTINGS:
         raise ValueError(f"method must be 'gridfit' or 'gam', got {method!r}")
 
-    _reject_foreign_settings(method, stride=stride, smoothness=smoothness, k=k, bs=bs)
+    _reject_foreign_settings(
+        method, stride=stride, smoothness=smoothness, gamma=gamma, k=k, bs=bs
+    )
 
     if xmax is None:
         xmax = np.max(x).astype(float)
@@ -252,6 +268,7 @@ def fit_sac_surface(
             ymax,
             stride=stride,
             smoothness=smoothness,
+            gamma=gamma,
             extend=extend,
             interp=interp,
             regularizer=regularizer,
@@ -304,6 +321,7 @@ def _fit_sac_surface_gridfit(
     *,
     stride: int | None,
     smoothness: int | float | str | None,
+    gamma: float | None,
     extend: str,
     interp: str,
     regularizer: str,
@@ -345,6 +363,7 @@ def _fit_sac_surface_gridfit(
         autoscale=autoscale,
         xscale=xscale,
         yscale=yscale,
+        gamma=gamma,
     ).fit()
 
     zmesh, xmesh, ymesh = resample_zgrid(
@@ -355,16 +374,26 @@ def _fit_sac_surface_gridfit(
     # gridfit selected, not the string the caller passed, so report that -- a
     # summary saying "auto" would not let anyone reproduce the fit.
     selected = g.smoothness_ if g.smoothness_ is not None else smoothness
+    auto = isinstance(smoothness, str)
+    summary: dict[str, Any] = {
+        "method": "gridfit",
+        "smoothness": selected,
+        "smoothness_auto": auto,
+        "stride": stride,
+    }
+    if auto:
+        # Under a search, `gamma` and the resulting edf are what the number
+        # above means; recording only the number would not describe the fit.
+        # Plain floats, not numpy scalars: this summary is carried into the
+        # mapping's metadata and gets written out from there.
+        summary["smoothness"] = float(selected)
+        summary["gamma"] = float(GAMMA_DEFAULT if gamma is None else gamma)
+        summary["edf"] = float(g.edf_)
     return SacSurface(
         zmesh=zmesh,
         xmesh=xmesh,
         ymesh=ymesh,
-        summary={
-            "method": "gridfit",
-            "smoothness": selected,
-            "smoothness_auto": isinstance(smoothness, str),
-            "stride": stride,
-        },
+        summary=summary,
     )
 
 

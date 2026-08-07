@@ -1263,7 +1263,8 @@ class Warper:
         ymax: int | float | None = None,
         method: str = "gridfit",
         stride: int | None = None,
-        smoothness: int | None = None,
+        smoothness: int | float | str | None = None,
+        gamma: float | None = None,
         k: int | tuple[int, int] | None = None,
         bs: str | None = None,
         backward_compatible: bool = False,
@@ -1274,9 +1275,14 @@ class Warper:
         ----------
         method : {"gridfit", "gam"}, default="gridfit"
             Which fitter to use, see :func:`pywarper.surface.fit_sac_surface`.
-        stride, smoothness : int, optional
-            ``"gridfit"`` settings; default to 3 and 15 here. Rejected under
-            ``"gam"``.
+        stride, smoothness : optional
+            ``"gridfit"`` settings; default to 3 and 15 here. Pass
+            ``smoothness="auto"`` to select it from the data instead -- what each
+            band settled on lands in ``self.surface_fit[band]``, since the two are
+            fitted separately and need not agree. Rejected under ``"gam"``.
+        gamma : float, optional
+            ``"gridfit"`` under ``smoothness="auto"`` only; the length scale the
+            selection is optimal for. See :func:`pywarper.surface.fit_sac_surface`.
         k, bs : optional
             ``"gam"`` settings; default to 100 and "tp". Rejected under
             ``"gridfit"``.
@@ -1308,6 +1314,7 @@ class Warper:
                 method=method,
                 stride=stride,
                 smoothness=smoothness,
+                gamma=gamma,
                 k=k,
                 bs=bs,
                 backward_compatible=backward_compatible,
