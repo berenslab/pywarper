@@ -30,6 +30,7 @@ venv/
 *.npz
 
 dev/
+ref/
 
 *copy*
 
