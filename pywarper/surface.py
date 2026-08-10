@@ -667,9 +667,9 @@ def conformal_map_indep_fixed_diagonals(
     n_anchors : int, default=16
         Number of anchor points to use for the conformal mapping.
         Options are 4, 8 (default), or 16 anchors.
-            - 4   → original behaviour (two separate solves, then average)
-            - 8   → add horizontal/vertical mid-lines (single solve)
-            - 16  → also add the quarter-lines (single solve)
+            - 4   -> original behaviour (two separate solves, then average)
+            - 8   -> add horizontal/vertical mid-lines (single solve)
+            - 16  -> also add the quarter-lines (single solve)
 
     Returns
     -------
@@ -974,8 +974,8 @@ def align_mapped_surface(
 
 
 def build_mapping(
-    on_sac_surface: np.ndarray,  # original `thisVZminmesh`  (ON‑Starburst layer)
-    off_sac_surface: np.ndarray,  # original `thisVZmaxmesh`  (OFF‑Starburst layer)
+    on_sac_surface: np.ndarray,  # original `thisVZminmesh`  (ON-Starburst layer)
+    off_sac_surface: np.ndarray,  # original `thisVZmaxmesh`  (OFF-Starburst layer)
     bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
     conformal_jump: int = 1,  # original `conformalJump`
     n_anchors: int = 16,  # number of anchor points for conformal mapping, options: 4, 8 or 16
@@ -985,7 +985,7 @@ def build_mapping(
     backward_compatible: bool = False,  # for MATLAB compatibility
 ) -> dict:
     """
-    Create a 2D conformal map that **flattens** the ON‑ and OFF‑Starburst Amacrine Cell (SAC)
+    Create a 2D conformal map that **flattens** the ON- and OFF-Starburst Amacrine Cell (SAC)
     layers onto a common plane so their geometry can later be imposed on retinal arbors.
 
     This is a refactored port of MATLAB **`calcWarpedSACsurfaces`**.
@@ -993,7 +993,7 @@ def build_mapping(
 
     Workflow
     --------
-    1. **Subsample** both SAC height‑fields within `bounds` at every `conformal_jump` pixels.
+    1. **Subsample** both SAC height-fields within `bounds` at every `conformal_jump` pixels.
     2. Measure the true 3D lengths of the main and skew diagonals on each subsampled surface.
     3. **Conformally map** the ON and OFF surfaces independently so those diagonals become straight with the measured lengths.
     4. **Align** the OFF map to the ON map by finding the x/y shift that minimises local slope mismatches.
@@ -1008,13 +1008,13 @@ def build_mapping(
     bounds : tuple[int, int, int, int] | np.ndarray
         *(xmin, xmax, ymin, ymax)* bounds of the region that actually contains the arbor.  (Formerly `arborBoundaries`).
     conformal_jump : int, default 1
-        Sub‑sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
+        Sub-sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
     n_anchors : int, default 16
         Number of anchor points used for the conformal mapping.
         Options are 4, 8 (default), or 16 anchors:
-            - 4   → original behaviour (two separate solves, then average)
-            - 8   → add horizontal/vertical mid-lines (single solve)
-            - 16  → also add the quarter-lines (single solve)
+            - 4   -> original behaviour (two separate solves, then average)
+            - 8   -> add horizontal/vertical mid-lines (single solve)
+            - 16  -> also add the quarter-lines (single solve)
     verbose : bool, default False
         If *True*, print timing information.
 
@@ -1028,7 +1028,7 @@ def build_mapping(
         ``main_diag_dist`` / ``skew_diag_dist``
             Mean physical lengths of the main and skew diagonals used as conformal constraints.
         ``sampled_x_idx`` / ``sampled_y_idx``
-            The x‑ and y‑indices that were actually sampled and mapped.
+            The x- and y-indices that were actually sampled and mapped.
         ``on_sac_surface`` / ``off_sac_surface``
             The original (subsampled) height fields kept for debugging or visualisation.
     """

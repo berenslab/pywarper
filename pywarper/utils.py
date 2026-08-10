@@ -120,9 +120,9 @@ def read_sumbul_et_al_chat_bands(fname: str, unit="voxel") -> dict[str, np.ndarr
         dtype=np.float64,
     )
 
-    x = data[:, 0] + 1  # KNOSSOS X  → +1 for MATLAB convention
+    x = data[:, 0] + 1  # KNOSSOS X  -> +1 for MATLAB convention
     y = data[:, 1]  # Slice (already 1-based)
-    z = data[:, 2] + 1  # KNOSSOS Y  → +1
+    z = data[:, 2] + 1  # KNOSSOS Y  -> +1
 
     if unit == "voxel":
         return {"x": x, "y": y, "z": z}
