@@ -376,18 +376,9 @@ def _fit_sac_surface_gridfit(
         "stride": stride,
     }
     if isinstance(smoothness, str):
-        # Under a search the value that shaped the surface is the one gridfit
-        # selected, not the string the caller passed -- a summary saying "auto"
-        # would not let anyone reproduce the fit. `gamma` and the resulting edf
-        # are what that number means, so they are recorded beside it, and
-        # `smoothness_auto` marks it as chosen rather than supplied.
-        #
-        # These keys appear only under a search: at a fixed smoothness the
-        # summary stays exactly what it has always been, so nothing reading it
-        # has to learn about a search it did not ask for.
-        #
-        # Plain floats, not numpy scalars: this is carried into the mapping's
-        # metadata and gets written out from there.
+        # Record the value gridfit selected, not the "auto" the caller passed, so
+        # the fit is reproducible; `gamma` and `edf` are what that number means.
+        # Plain floats because this is written out as mapping metadata.
         summary["smoothness"] = float(g.smoothness_)
         summary["smoothness_auto"] = True
         summary["gamma"] = float(GAMMA_DEFAULT if gamma is None else gamma)
@@ -430,9 +421,8 @@ def _fit_sac_surface_gam(
     # extend="always" so points past the node range never warn -- these nodes are
     # the caller's readout grid, not one negotiated with the data, and extending
     # them cannot change the answer because predict() reads the fit out on the
-    # pristine grid. GamFit's validator writes the extended boundary back into the
-    # arrays it is handed, so it gets copies.
-    g = GamFit(x, y, z, xnodes.copy(), ynodes.copy(), k=k, bs=bs, extend="always").fit()
+    # pristine grid.
+    g = GamFit(x, y, z, xnodes, ynodes, k=k, bs=bs, extend="always").fit()
     surface = g.predict(xnodes, ynodes)
 
     summary = g.summary()
@@ -501,15 +491,9 @@ def resample_zgrid(
     #    specifying x= xnodes (ascending), y= ynodes (ascending).
     #    Note that in Python, the first axis in zgrid is y, second is x.
     #    So pass (ynodes, xnodes) in that order:
-    # fill_value=None extrapolates instead of returning NaN. The query grid runs to
-    # round(xmax), which overhangs the last node by up to half a pixel whenever xmax
-    # is not an integer -- the annotation files carry sub-pixel coordinates, so that
-    # is the common case, and NaN there left an all-NaN column on the edge of the
-    # surface. MATLAB never reached this branch: textread('%d') rounded the
-    # coordinates, so its grid ended exactly on the last node. Keeping the sub-pixel
-    # values means the overhang is real, and extrapolating half a pixel of an
-    # already-linear interpolant is continuous with the interior; MATLAB's own guard
-    # (a constant mean(zgrid)) would put a cliff there instead.
+    # fill_value=None extrapolates instead of returning NaN: the query grid runs to
+    # round(xmax) and overhangs the last node by up to half a pixel when xmax is
+    # sub-pixel, which otherwise leaves an all-NaN column on the surface edge.
     rgi = RegularGridInterpolator(
         (ynodes, xnodes),  # (y-axis, x-axis)
         zgrid,
@@ -758,9 +742,12 @@ def conformal_map_indep_fixed_diagonals(
 
         # AtA is symmetric positive definite, so a sparse Cholesky applies and is
         # several times faster than the general LU of scipy's spsolve.
+        #
+        # order="amd": each system is factorized once, so the default "best" pays
+        # METIS's ordering cost up front and never amortizes it.
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
-        sol = cho_solve(AtA, Atb)
+        sol = cho_solve(AtA, Atb, order="amd")
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))

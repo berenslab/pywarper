@@ -814,7 +814,7 @@ wheels = [
 
 [[package]]
 name = "hea"
-version = "0.1.9"
+version = "0.1.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -827,15 +827,15 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/20/67/a221a9fe93549a815767850572b3a4d97e962f7e0cf4a0ffab63ea9c6871/hea-0.1.9.tar.gz", hash = "sha256:eeb08b716c3aa3631e84e048f251240b59f837da92c73fc1b933b02081c7c8a5", size = 1777280, upload-time = "2026-08-06T12:43:51.439Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/56/c2/47c5af4318160d8800dd7f01f79e5b24939d3024580f22632413b73b5e4c/hea-0.1.10.tar.gz", hash = "sha256:0ec2047b2caf54dc9ff72e26936dd973d7c3330f819220a61738179873fd918e", size = 1892481, upload-time = "2026-08-14T15:16:50.54Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e6/38/bb27374b80229735ffb1be272dd6658e7492e2eecf0fb724801ee0869f7d/hea-0.1.9-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:a6fe15ec6346ca7310a7abe0eec02ca31162d9405626490c79181fdae6606d92", size = 2625872, upload-time = "2026-08-06T12:43:39.772Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/ed/e404869186e91ef0c5dbb0b32a97e33e4ed0359020a66449872c5b77ffdc/hea-0.1.9-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:4280b620ac1d8cdbc65c87cf4aa7a5a2f14ca304819f9dd6ed2ad9e80708e2c7", size = 2581915, upload-time = "2026-08-06T12:43:41.597Z" },
-    { url = "https://files.pythonhosted.org/packages/0b/67/37f2fc512fe8438a8192fcea4e960e626529d5fb530bac58faddee2772a9/hea-0.1.9-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b07901ed7e690bf8518ea331772049da23a4a8d5319bf93f84e3c52534162e90", size = 2652122, upload-time = "2026-08-06T12:43:42.899Z" },
-    { url = "https://files.pythonhosted.org/packages/90/64/6710ebec1f23f7b5a97b7ff75202a2d5e66a8d69bac13833b5b1ad62ca6b/hea-0.1.9-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:3ae65fb6f45e4a8ce068ecd8498511b3d5d3cd2688a94e669c670661f8e0ed22", size = 2680332, upload-time = "2026-08-06T12:43:44.438Z" },
-    { url = "https://files.pythonhosted.org/packages/bf/ce/77474f7390950e9feb135ce4ef0107d0dfb1ce578e84999c81c1497ae1c1/hea-0.1.9-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:1eb7cdb72122a131b36cce7cb9067c2794c3ba043806ae524ac3464e3c83661e", size = 2828284, upload-time = "2026-08-06T12:43:45.959Z" },
-    { url = "https://files.pythonhosted.org/packages/01/75/08f2518d8a4c584b481092096b6fde8e6e14e9ceef2655d7837f73eda59a/hea-0.1.9-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:e4eb5cb8e18f4439a95369628fb4dd6be476798247b1bc81640b764b06a39e4b", size = 2914094, upload-time = "2026-08-06T12:43:48.013Z" },
-    { url = "https://files.pythonhosted.org/packages/64/de/c655c3342746739ba7c95b29c4f03be331a83ca323e88a65b156cdc235c5/hea-0.1.9-cp310-abi3-win_amd64.whl", hash = "sha256:4f29cc6213be98c93ec32389ef2dda3b965bdcfcf65ca6a5505295a424c5de03", size = 2590978, upload-time = "2026-08-06T12:43:49.964Z" },
+    { url = "https://files.pythonhosted.org/packages/fb/42/5868f96b12e4a55001a26b6e867523b71e1043f352fa78be277291123276/hea-0.1.10-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:b18352564eddd4c6838fc1f83179a5f31e16531f9058369886aeff23eec0da9e", size = 2793234, upload-time = "2026-08-14T15:16:35.168Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/6f/9f03ca9d2c42b1cb224041ca52d8e537bdb7d1f4b4866f06c1ee52cad466/hea-0.1.10-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:8ea4284d40bee23f51178674fc696762a4316a340046dc63af026e44ff1ca3f4", size = 2722179, upload-time = "2026-08-14T15:16:37.028Z" },
+    { url = "https://files.pythonhosted.org/packages/6c/e2/d66220224bc5fa3144ed38a2730de54deef96aa35da4b6d96303f865767f/hea-0.1.10-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4f37b61a1511ebf0034b340afc9fb2e2c5fa8b90d87816b5adb1d62c6e411147", size = 12555457, upload-time = "2026-08-14T15:16:39.179Z" },
+    { url = "https://files.pythonhosted.org/packages/29/64/b79aa77aacf3f58041e49199e2516bde0262d90cca7e205986a3181f617d/hea-0.1.10-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:80548bde73e73c8243c85ceed2c92fc4beab7eaf693e709c1794239e13c21d9d", size = 11754302, upload-time = "2026-08-14T15:16:41.831Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/3e/205ee038f100217bcd4432e40a3364f091ffc18016bb271e41d9c82ce9b0/hea-0.1.10-cp310-abi3-musllinux_1_2_aarch64.whl", hash = "sha256:b1a55a017dec201a6cfcf6391f2a2d3cb32c7b636234ce5fd03af3286304efec", size = 2957336, upload-time = "2026-08-14T15:16:44.478Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/44/5ebd519eab2c0b8f05dc0166565a0d4e8f5ce5ea466d90cc75695152baa9/hea-0.1.10-cp310-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:c6f5f163c25a162768133cc25716bcd6b83b5d0344a49fbdc2ac643dd49ace3f", size = 3068048, upload-time = "2026-08-14T15:16:46.229Z" },
+    { url = "https://files.pythonhosted.org/packages/ca/b8/71cb867121c1831e796d23b15f0b9c55e5fdcf413d9bb46f2cbd504132c9/hea-0.1.10-cp310-abi3-win_amd64.whl", hash = "sha256:54ad9f9cdce06dd624cf6df9e502f16867c9735b4ae2d7e3597d30b1af7d2cf0", size = 9540563, upload-time = "2026-08-14T15:16:47.955Z" },
 ]
 
 [[package]]
@@ -2685,7 +2685,7 @@ wheels = [
 
 [[package]]
 name = "pygridfit"
-version = "0.2.0"
+version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "hea" },
@@ -2700,9 +2700,9 @@ dependencies = [
     { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "watermark" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d9/72/9189a5cd2de02cae99f64f55e4a19169b8fdb1026baf0434fa5525d1d5e5/pygridfit-0.2.0.tar.gz", hash = "sha256:9ccafa86baca0ef925f5ae354147a5e9d6e345842dd63bc575d544b3d389ea8f", size = 2399888, upload-time = "2026-08-07T14:03:26.376Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/f8/c87c628d4ccf3524ab8abf0bb68a7723afe89e5a9eee75dea80e7d510cec/pygridfit-0.2.1.tar.gz", hash = "sha256:2988be3f62fcd26b8a6d3417b59ff1b60ae6cbb96b0d038f581b82351ca2379b", size = 2400223, upload-time = "2026-08-14T15:29:09.623Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/47/d7/fb9bc503f51a7539aa01feae972c7c494b9d2777a32d2ca1024b9c20246a/pygridfit-0.2.0-py3-none-any.whl", hash = "sha256:2ad2018f00d2682f694fa060ced3440bbce9d78e1f64a209ecf29c97d0c14dab", size = 41813, upload-time = "2026-08-07T14:03:25.271Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/b9/bb38d7d690e14d1bbf4fa45499d84707648c2c13d99699a9b2f75e371d27/pygridfit-0.2.1-py3-none-any.whl", hash = "sha256:c944aa7a164099362cc6175b22105bd7fdd5a97f6edaa37a18b85de55d8f7b96", size = 41000, upload-time = "2026-08-14T15:29:08.277Z" },
 ]
 
 [[package]]
@@ -2808,9 +2808,9 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alphashape", specifier = ">=1.3.1" },
-    { name = "hea", specifier = ">=0.1.9" },
+    { name = "hea", specifier = ">=0.1.10" },
     { name = "numpy", specifier = ">=2.2.0" },
-    { name = "pygridfit", specifier = ">=0.2.0" },
+    { name = "pygridfit", specifier = ">=0.2.1" },
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scipy", specifier = ">=1.15.0" },
