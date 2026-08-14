@@ -22,33 +22,80 @@ The resulting 2-D coordinates mapping can be applied to any neurite morphology l
 so that axonal and dendritic trees can be visualised *as if* the inner plexiform layer were perfectly
 flat.
 """
+
 import time
+from dataclasses import dataclass, field
+from importlib import metadata as _metadata
+from typing import Any, Iterator
 
 import numpy as np
-from pygridfit import GridFit
+from hea.sparse import cho_solve
+from pygridfit import GamFit, GridFit
+from pygridfit.autosmooth import GAMMA_DEFAULT
 from scipy.interpolate import RegularGridInterpolator
 from scipy.signal import convolve2d
 from scipy.sparse import coo_matrix, hstack, vstack
-from scipy.sparse.linalg import spsolve
-
-try:
-    from sksparse.cholmod import cho_solve
-    HAS_CHOLMOD = True
-except ImportError:
-    HAS_CHOLMOD = False
-    _WARN_MSG = (
-        "[pywarper.surface] Optional dependency 'scikit-sparse' (CHOLMOD bindings) not found. "
-        "Falling back to SciPy's sparse linear solver, which is ≈5–10× slower for large problems.\n\n"
-        "For platform-specific instructions see the project README:\n"
-        "\thttps://github.com/berenslab/pywarper#installation"
-    )
-    print(_WARN_MSG)
-
-
-
-from importlib import metadata as _metadata
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
+
+#: Arguments that belong to exactly one fitter, keyed by the fitter that owns them.
+_FITTER_ONLY_SETTINGS: dict[str, tuple[str, ...]] = {
+    "gridfit": ("stride", "smoothness", "gamma"),
+    "gam": ("k", "bs"),
+}
+
+#: Why the *other* fitter cannot honour them, keyed by the fitter that was chosen.
+_NO_MEANING_BECAUSE: dict[str, str] = {
+    "gam": (
+        "the GAM has no coarse node grid and selects its smoothing parameter by "
+        "REML; use k= and bs= instead"
+    ),
+    "gridfit": (
+        "gridfit's model is the node grid itself rather than a spline basis; use "
+        "stride= and smoothness= instead"
+    ),
+}
+
+
+@dataclass(frozen=True)
+class SacSurface:
+    """A fitted SAC height field on the unit grid.
+
+    Iterating yields ``(zmesh, xmesh, ymesh)`` and nothing else, so
+    ``zmesh, xmesh, ymesh = fit_sac_surface(...)`` keeps working however many
+    diagnostic fields are added here later.
+
+    Attributes
+    ----------
+    zmesh : np.ndarray
+        Surface heights, shape *(xmax, ymax)*.
+    xmesh, ymesh : np.ndarray
+        Coordinate meshes matching `zmesh`.
+    se : np.ndarray or None
+        Pointwise standard error, same shape as `zmesh`. Only the ``"gam"``
+        fitter produces one; `None` under ``"gridfit"``.
+
+        Not an extrapolation guard: a thin-plate spline's null space is the
+        unpenalized plane ``1, x, y``, so it extrapolates as a plane with small
+        `se`, and regions the annotation never covered are not flagged here.
+    summary : dict
+        What the fitter settled on -- basis size, effective degrees of freedom
+        and selected smoothing parameter under ``"gam"``; the node stride and the
+        `smoothness` under ``"gridfit"``, which is the caller's value unless
+        ``"smoothness_auto"`` says it was selected from the data, in which case
+        the `gamma` that shaped the search and the resulting `edf` are recorded
+        alongside it.
+    """
+
+    zmesh: np.ndarray
+    xmesh: np.ndarray
+    ymesh: np.ndarray
+    se: np.ndarray | None = None
+    summary: dict[str, Any] = field(default_factory=dict)
+
+    def __iter__(self) -> Iterator[np.ndarray]:
+        return iter((self.zmesh, self.xmesh, self.ymesh))
+
 
 def fit_sac_surface(
     x: np.ndarray,
@@ -56,8 +103,12 @@ def fit_sac_surface(
     z: np.ndarray,
     xmax: int | float | None = None,
     ymax: int | float | None = None,
-    stride: int = 3, 
-    smoothness: int = 1,
+    method: str = "gridfit",
+    stride: int | None = None,
+    smoothness: int | float | str | None = None,
+    gamma: float | None = None,
+    k: int | tuple[int, int] | None = None,
+    bs: str | None = None,
     extend: str = "warning",
     interp: str = "triangle",
     regularizer: str = "gradient",
@@ -66,11 +117,19 @@ def fit_sac_surface(
     autoscale: str = "on",
     xscale: float = 1.0,
     yscale: float = 1.0,
-    backward_compatible: bool = False
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    backward_compatible: bool = False,
+) -> SacSurface:
     """
-    Fits a surface to scattered data points (x, y, z) using grid-based interpolation
-    and smoothing. Internally uses a GridFit-based approach to produce a 2D surface.
+    Fit a surface to scattered data points (x, y, z) and read it out on the unit grid.
+
+    Two fitters are available and they answer different questions. ``"gridfit"``
+    makes the output grid *be* the model, one unknown per node penalized by finite
+    differences at a smoothness the caller fixes; it is the ported MATLAB path.
+    ``"gam"`` fits a penalized regression spline in `k` basis functions with the
+    smoothing parameter chosen by REML, then evaluates it. Because the GAM's model
+    is the basis rather than the grid, it is read out on the unit grid directly and
+    skips the coarse-fit-then-resample step `"gridfit"` needs -- on the SAC bands
+    that resampling costs rms ~0.8 and up to ~8 voxels on its own.
 
     Parameters
     ----------
@@ -86,66 +145,297 @@ def fit_sac_surface(
     ymax : int, optional
         Maximum value along the y-axis used to define the interpolation grid.
         If None, the max value from y is used.
-    smoothness : int, default=1
-        Amount of smoothing applied during fitting.
+    method : {"gridfit", "gam"}, default="gridfit"
+        Which fitter to use. ``"gridfit"`` is the default because it is the path
+        the MATLAB parity tests pin.
+    stride : int, optional
+        Node spacing of the ``"gridfit"`` fit, before resampling to the unit grid.
+        Defaults to 3, matching MATLAB. Rejected under ``"gam"``, which has no
+        coarse grid.
+    smoothness : int, float or "auto", optional
+        Amount of smoothing applied by ``"gridfit"``. Defaults to 1, matching
+        MATLAB. Pass ``"auto"`` to have gridfit choose it from the data by
+        generalized cross-validation instead; the value it settled on is
+        reported in `summary` under ``"smoothness"``, and ``"smoothness_auto"``
+        records that it was selected rather than supplied. ``"auto"`` requires
+        the default ``solver="normal"``. Rejected under ``"gam"``, which selects
+        its own smoothing parameter by REML.
+    gamma : float, optional
+        ``"gridfit"`` under ``smoothness="auto"`` only. How much the GCV criterion
+        inflates the effective degrees of freedom, which is really a choice of the
+        length scale the selection is optimal for. Defaults to gridfit's 1.2,
+        calibrated to predicting across a gap of a few node spacings; raise it when
+        the surface has to carry well past its data. The SAC bands want the
+        default -- their annotated region has essentially no interior gaps, so the
+        short scale is the operative one. Passing it at a fixed `smoothness` is an
+        error rather than a no-op, and it is rejected under ``"gam"``.
+    k : int or (int, int), optional
+        ``"gam"`` only. Basis dimension of the smooth -- the model's complexity,
+        unrelated to the output grid size. Defaults to 100. Under ``bs="te"`` it
+        is the dimension per margin, so pass a much smaller number, or a pair to
+        size the two directions separately. Rejected under ``"gridfit"``, whose
+        model is the node grid rather than a basis.
+    bs : {"tp", "te"}, optional
+        ``"gam"`` only. Thin-plate ("tp", isotropic) or tensor product ("te", one
+        smoothing parameter per direction). Defaults to "tp"; on the SAC bands
+        "te" extrapolates considerably worse outside the annotated region.
+        Rejected under ``"gridfit"``.
     extend : str, default="warning"
-        Determines how to handle extrapolation outside data boundaries.
-        Possible values include "warning", "fill", etc. (see GridFit docs).
+        ``"gridfit"`` only. Behaviour for data lying outside the node ranges.
+        The GAM's nodes are the caller's readout grid rather than a grid
+        negotiated with the data, so it has nothing to extend.
     interp : str, default="triangle"
-        Type of interpolation to apply (e.g., "triangle", "bilinear").
+        ``"gridfit"`` only. Interpolation scheme (e.g., "triangle", "bilinear").
     regularizer : str, default="gradient"
-        Regularization method used in the solver (e.g., "gradient", "laplacian").
+        ``"gridfit"`` only. Regularization to impose (e.g., "gradient", "laplacian").
     solver : str, default="normal"
-        Solver backend (e.g., "normal" for normal equations).
+        ``"gridfit"`` only. Solver backend (e.g., "normal" for normal equations).
     maxiter : int, optional
-        Maximum number of solver iterations. If None, defaults to solver-based value.
+        ``"gridfit"`` only. Iteration limit for iterative solvers.
     autoscale : str, default="on"
-        Autoscaling setting for the solver.
-    xscale : float, default=1.0
-        Additional scaling factor applied to the x-dimension during fitting.
-    yscale : float, default=1.0
-        Additional scaling factor applied to the y-dimension during fitting.
+        ``"gridfit"`` only. Autoscaling setting for the solver.
+    xscale, yscale : float, default=1.0
+        ``"gridfit"`` only. Manual scaling factors used in the regularization.
     backward_compatible : bool, default=False
-        If True, use the same node spacing as the original MATLAB implementation.
-        
+        If True, use the 1-based output grid of the original MATLAB implementation
+        (and, under ``"gridfit"``, its node spacing).
+
     Returns
     -------
-    zmesh: np.ndarray (xmax, ymax)
-        2D array of interpolated z-values over the fitted surface / Interpolated surface heights.
-    xmesh, ymesh: np.ndarray (xma, ymax)
-        Grid coordinate matrices matching zmesh.
+    SacSurface
+        `zmesh`, `xmesh`, `ymesh` of shape *(xmax, ymax)*, plus `se` and `summary`.
+        Unpacks as the historical three-tuple.
+
+    Raises
+    ------
+    ValueError
+        If `method` is not recognized, or a fitter-specific argument is passed to
+        the fitter that has no use for it.
+
+    Notes
+    -----
+    Which to use. ``"gridfit"`` stays the default: it reproduces published
+    results, it is the path the MATLAB parity test pins, and on the SAC bands it
+    costs ~0.4 s per surface against ~3 s for ``"gam"``, which matters across a
+    corpus. Reach for ``"gam"`` when per-node standard errors are wanted, or
+    when the resampling step is the thing you want gone -- on these bands its
+    interpolation loss is about as large as the whole difference between the
+    two fitters. Where both are supported by data they agree to rms ~1 voxel.
+
+    Wanting the smoothness to come from the data rather than a hand-set constant
+    is no longer a reason to pick between them: ``smoothness="auto"`` gives
+    ``"gridfit"`` a GCV search, at a few times the cost of one fixed fit. The two
+    criteria are not the same object, though -- GCV on gridfit's node grid and
+    REML on the GAM's basis will not agree on a number, and neither is
+    convertible into the other.
+
+    Extrapolation. Both fitters return a value over the whole lattice, and that is
+    deliberate -- it is the property gridfit is built for, filling the corners
+    smoothly where `griddata` would leave holes outside the convex hull. But a
+    smooth continuation is not a measurement, and how far it can be trusted depends
+    on how far it has to run. The ChAT bands leave the imaged volume diagonally, so
+    a wedge of the output grid sits hundreds of pixels past the last annotated
+    point; with nothing to anchor it, gridfit's gradient regularizer carries the
+    boundary slope onward and reaches z ~ -250 on the test cell, against data
+    spanning [1, 136]. That is inherited, not a porting artifact -- the original
+    MATLAB does the same at its own ``'smoothness',1``. The GAM is better behaved
+    but not exempt (~ -150 on the same wedge), because a thin-plate spline's null
+    space is the unpenalized plane ``1, x, y``, so it too continues linearly.
+
+    That same null space is why `se` cannot be used to detect the problem: the
+    extrapolated plane carries a small standard error. Bound the mapping instead --
+    `Warper.build_mapping(bounds="local")` typically keeps the unsampled corner
+    out, where ``"global"`` does not.
     """
+    if method not in _FITTER_ONLY_SETTINGS:
+        raise ValueError(f"method must be 'gridfit' or 'gam', got {method!r}")
+
+    _reject_foreign_settings(
+        method, stride=stride, smoothness=smoothness, gamma=gamma, k=k, bs=bs
+    )
+
     if xmax is None:
         xmax = np.max(x).astype(float)
     if ymax is None:
         ymax = np.max(y).astype(float)
 
+    if method == "gridfit":
+        return _fit_sac_surface_gridfit(
+            x,
+            y,
+            z,
+            xmax,
+            ymax,
+            stride=stride,
+            smoothness=smoothness,
+            gamma=gamma,
+            extend=extend,
+            interp=interp,
+            regularizer=regularizer,
+            solver=solver,
+            maxiter=maxiter,
+            autoscale=autoscale,
+            xscale=xscale,
+            yscale=yscale,
+            backward_compatible=backward_compatible,
+        )
+    return _fit_sac_surface_gam(
+        x,
+        y,
+        z,
+        xmax,
+        ymax,
+        k=k,
+        bs=bs,
+        backward_compatible=backward_compatible,
+    )
+
+
+def _reject_foreign_settings(method: str, **settings: Any) -> None:
+    """Refuse a setting that belongs to the fitter which was not chosen.
+
+    Silently dropping a `smoothness` the caller asked for would hide that the GAM
+    picked its own by REML, and dropping a `k` would hide that gridfit has no
+    basis to size.
+    """
+    other = "gam" if method == "gridfit" else "gridfit"
+    passed = [
+        name for name in _FITTER_ONLY_SETTINGS[other] if settings[name] is not None
+    ]
+    if not passed:
+        return
+    plural = len(passed) > 1
+    raise ValueError(
+        f"{', '.join(passed)} {'are' if plural else 'is a'} {other} "
+        f"setting{'s' if plural else ''} with no meaning under method={method!r}: "
+        f"{_NO_MEANING_BECAUSE[method]}."
+    )
+
+
+def _fit_sac_surface_gridfit(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    xmax: int | float,
+    ymax: int | float,
+    *,
+    stride: int | None,
+    smoothness: int | float | str | None,
+    gamma: float | None,
+    extend: str,
+    interp: str,
+    regularizer: str,
+    solver: str,
+    maxiter: int | None,
+    autoscale: str,
+    xscale: float,
+    yscale: float,
+    backward_compatible: bool,
+) -> SacSurface:
+    """Solve for one height per node, then resample onto the unit grid.
+
+    The nodes are spaced `stride` apart, so the fit lives on a coarser grid than
+    the readout and has to be interpolated up to it.
+    """
+    stride = 3 if stride is None else stride
+    smoothness = 1 if smoothness is None else smoothness
+
     if backward_compatible:
         # MATLAB-style nodes
-        xnodes = np.hstack([np.arange(1., xmax, stride), np.array([xmax])])
-        ynodes = np.hstack([np.arange(1., ymax, stride), np.array([ymax])])
+        xnodes = np.hstack([np.arange(1.0, xmax, stride), np.array([xmax])])
+        ynodes = np.hstack([np.arange(1.0, ymax, stride), np.array([ymax])])
     else:
         xnodes = np.arange(0, xmax + stride, stride)
         ynodes = np.arange(0, ymax + stride, stride)
 
-    g = GridFit(x, y, z, xnodes, ynodes, 
-                    smoothness=smoothness,
-                    extend=extend,
-                    interp=interp,
-                    regularizer=regularizer,
-                    solver=solver,
-                    maxiter=maxiter,
-                    autoscale=autoscale,
-                    xscale=xscale,
-                    yscale=yscale,
-        ).fit()
-    zgrid = np.asarray(g.zgrid)
+    g = GridFit(
+        x,
+        y,
+        z,
+        xnodes,
+        ynodes,
+        smoothness=smoothness,
+        extend=extend,
+        interp=interp,
+        regularizer=regularizer,
+        solver=solver,
+        maxiter=maxiter,
+        autoscale=autoscale,
+        xscale=xscale,
+        yscale=yscale,
+        gamma=gamma,
+    ).fit()
 
     zmesh, xmesh, ymesh = resample_zgrid(
-        xnodes, ynodes, zgrid, xmax, ymax, backward_compatible
+        xnodes, ynodes, np.asarray(g.zgrid), xmax, ymax, backward_compatible
     )
 
-    return zmesh, xmesh, ymesh
+    summary: dict[str, Any] = {
+        "method": "gridfit",
+        "smoothness": smoothness,
+        "stride": stride,
+    }
+    if isinstance(smoothness, str):
+        # Record the value gridfit selected, not the "auto" the caller passed, so
+        # the fit is reproducible; `gamma` and `edf` are what that number means.
+        # Plain floats because this is written out as mapping metadata.
+        summary["smoothness"] = float(g.smoothness_)
+        summary["smoothness_auto"] = True
+        summary["gamma"] = float(GAMMA_DEFAULT if gamma is None else gamma)
+        summary["edf"] = float(g.edf_)
+    return SacSurface(
+        zmesh=zmesh,
+        xmesh=xmesh,
+        ymesh=ymesh,
+        summary=summary,
+    )
+
+
+def _fit_sac_surface_gam(
+    x: np.ndarray,
+    y: np.ndarray,
+    z: np.ndarray,
+    xmax: int | float,
+    ymax: int | float,
+    *,
+    k: int | tuple[int, int] | None,
+    bs: str | None,
+    backward_compatible: bool,
+) -> SacSurface:
+    """Fit a penalized regression spline and evaluate it on the unit grid.
+
+    The basis is the model, not the grid, so the fit is read out at unit spacing
+    directly and there is no resampling step.
+    """
+    k = 100 if k is None else k
+    bs = "tp" if bs is None else bs
+
+    nx, ny = round(xmax), round(ymax)
+    if backward_compatible:
+        xnodes = np.arange(1.0, nx + 1)
+        ynodes = np.arange(1.0, ny + 1)
+    else:
+        xnodes = np.arange(0.0, nx)
+        ynodes = np.arange(0.0, ny)
+
+    # extend="always" so points past the node range never warn -- these nodes are
+    # the caller's readout grid, not one negotiated with the data, and extending
+    # them cannot change the answer because predict() reads the fit out on the
+    # pristine grid.
+    g = GamFit(x, y, z, xnodes, ynodes, k=k, bs=bs, extend="always").fit()
+    surface = g.predict(xnodes, ynodes)
+
+    summary = g.summary()
+    summary["method"] = "gam"
+    return SacSurface(
+        # GamFit lays its grids out (ny, nx); pywarper indexes surfaces (nx, ny).
+        zmesh=surface.zgrid.T,
+        xmesh=surface.xgrid.T,
+        ymesh=surface.ygrid.T,
+        se=surface.se_grid.T,
+        summary=summary,
+    )
+
 
 def resample_zgrid(
     xnodes: np.ndarray,
@@ -153,7 +443,7 @@ def resample_zgrid(
     zgrid: np.ndarray,
     xmax: int | float,
     ymax: int | float,
-    backward_compatible: bool = False
+    backward_compatible: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Resamples a 2D grid (zgrid) at integer coordinates up to xmax and ymax.
@@ -197,32 +487,29 @@ def resample_zgrid(
     xmax = round(xmax)
     ymax = round(ymax)
 
-    # 1) Build the interpolator, 
+    # 1) Build the interpolator,
     #    specifying x= xnodes (ascending), y= ynodes (ascending).
     #    Note that in Python, the first axis in zgrid is y, second is x.
     #    So pass (ynodes, xnodes) in that order:
+    # fill_value=None extrapolates instead of returning NaN: the query grid runs to
+    # round(xmax) and overhangs the last node by up to half a pixel when xmax is
+    # sub-pixel, which otherwise leaves an all-NaN column on the surface edge.
     rgi = RegularGridInterpolator(
         (ynodes, xnodes),  # (y-axis, x-axis)
-        zgrid, 
-        method="linear", 
-        bounds_error=False, 
-        fill_value=np.nan  # or e.g. zgrid.mean()
+        zgrid,
+        method="linear",
+        bounds_error=False,
+        fill_value=None,
     )
 
-    # 2) Make xi, yi as in MATLAB, 
+    # 2) Make xi, yi as in MATLAB,
     #    then do xi=xi', yi=yi' => shape (xmax, ymax).
     if backward_compatible:
         xi_m, yi_m = np.meshgrid(
-            np.arange(1, xmax+1), 
-            np.arange(1, ymax+1), 
-            indexing='xy'
+            np.arange(1, xmax + 1), np.arange(1, ymax + 1), indexing="xy"
         )
     else:
-        xi_m, yi_m = np.meshgrid(
-            np.arange(0, xmax), 
-            np.arange(0, ymax), 
-            indexing='xy'
-        )
+        xi_m, yi_m = np.meshgrid(np.arange(0, xmax), np.arange(0, ymax), indexing="xy")
     xi = xi_m.T  # shape (xmax, ymax)
     yi = yi_m.T  # shape (xmax, ymax)
 
@@ -240,9 +527,7 @@ def resample_zgrid(
 
 
 def calculate_diag_length(
-    xpos: np.ndarray,
-    ypos: np.ndarray,
-    VZmesh: np.ndarray
+    xpos: np.ndarray, ypos: np.ndarray, VZmesh: np.ndarray
 ) -> tuple[float, float]:
     """
     Computes the 3D length along the main and skew diagonals of VZmesh
@@ -260,18 +545,12 @@ def calculate_diag_length(
 
     # Build regular-grid interpolators
     interp_x = RegularGridInterpolator(
-        (xpos, ypos),
-        np.meshgrid(xpos, ypos, indexing="ij")[0],
-        method="linear"
+        (xpos, ypos), np.meshgrid(xpos, ypos, indexing="ij")[0], method="linear"
     )
     interp_y = RegularGridInterpolator(
-        (xpos, ypos),
-        np.meshgrid(xpos, ypos, indexing="ij")[1],
-        method="linear"
+        (xpos, ypos), np.meshgrid(xpos, ypos, indexing="ij")[1], method="linear"
     )
-    interp_z = RegularGridInterpolator(
-        (xpos, ypos), VZmesh, method="linear"
-    )
+    interp_z = RegularGridInterpolator((xpos, ypos), VZmesh, method="linear")
 
     if N >= M:
         # vectors of length N
@@ -300,15 +579,11 @@ def calculate_diag_length(
     z_skew_v = interp_z(pts_skew)
 
     # Stack, diff, and accumulate Euclidean distances (vectorised, no Python loop)
-    diffs_main = np.diff(
-        np.stack((x_main_v, y_main_v, z_main_v), axis=1), axis=0
-    )
-    diffs_skew = np.diff(
-        np.stack((x_skew_v, y_skew_v, z_skew_v), axis=1), axis=0
-    )
+    diffs_main = np.diff(np.stack((x_main_v, y_main_v, z_main_v), axis=1), axis=0)
+    diffs_skew = np.diff(np.stack((x_skew_v, y_skew_v, z_skew_v), axis=1), axis=0)
 
-    main_diag_dist = np.sqrt((diffs_main ** 2).sum(1)).sum()
-    skew_diag_dist = np.sqrt((diffs_skew ** 2).sum(1)).sum()
+    main_diag_dist = np.sqrt((diffs_main**2).sum(1)).sum()
+    skew_diag_dist = np.sqrt((diffs_skew**2).sum(1)).sum()
 
     return main_diag_dist, skew_diag_dist
 
@@ -335,11 +610,11 @@ def assign_local_coordinates(triangles: np.ndarray) -> tuple[np.ndarray, ...]:
     d13 = np.linalg.norm(v1 - v3, axis=1)
     d23 = np.linalg.norm(v2 - v3, axis=1)
 
-    y3 = ((-d12) ** 2 + d13 ** 2 - d23 ** 2) / (2 * -d12)
-    x3 = np.sqrt(np.maximum(0.0, d13 ** 2 - y3 ** 2))
+    y3 = ((-d12) ** 2 + d13**2 - d23**2) / (2 * -d12)
+    x3 = np.sqrt(np.maximum(0.0, d13**2 - y3**2))
 
     w2 = -x3 - 1j * y3
-    w1 =  x3 + 1j * (y3 + d12)
+    w1 = x3 + 1j * (y3 + d12)
     w3 = 1j * (-d12)
 
     zeta = np.abs(np.real(1j * (np.conj(w2) * w1 - np.conj(w1) * w2)))
@@ -353,12 +628,12 @@ def conformal_map_indep_fixed_diagonals(
     ypos: np.ndarray,
     VZmesh: np.ndarray,
     *,
-    n_anchors: int = 16,        # 4, 8 (default) or 16
-    backward_compatible: bool = False
+    n_anchors: int = 16,  # 4, 8 (default) or 16
+    backward_compatible: bool = False,
 ) -> np.ndarray:
     """
-    Creates a quasi-conformal 2D mapping of the surface in VZmesh. 
-    Diagonal constraints are fixed using mainDiagDist and skewDiagDist 
+    Creates a quasi-conformal 2D mapping of the surface in VZmesh.
+    Diagonal constraints are fixed using mainDiagDist and skewDiagDist
     for consistent scaling.
 
     Parameters
@@ -376,10 +651,10 @@ def conformal_map_indep_fixed_diagonals(
     n_anchors : int, default=16
         Number of anchor points to use for the conformal mapping.
         Options are 4, 8 (default), or 16 anchors.
-            - 4   → original behaviour (two separate solves, then average)  
-            - 8   → add horizontal/vertical mid-lines (single solve)  
-            - 16  → also add the quarter-lines (single solve)
-        
+            - 4   -> original behaviour (two separate solves, then average)
+            - 8   -> add horizontal/vertical mid-lines (single solve)
+            - 16  -> also add the quarter-lines (single solve)
+
     Returns
     -------
     mappedPositions : np.ndarray
@@ -392,7 +667,7 @@ def conformal_map_indep_fixed_diagonals(
     constructing a sparse system to enforce approximate conformality, and then
     solving for new vertex positions subject to diagonally fixed boundaries.
     The final 2D layout merges two separate diagonal constraints.
-    """  
+    """
     M, N = VZmesh.shape
 
     if backward_compatible:
@@ -401,15 +676,15 @@ def conformal_map_indep_fixed_diagonals(
     else:
         xpos_new = xpos
         ypos_new = ypos
-    vertexCount   = M * N
+    vertexCount = M * N
     triangleCount = (2 * M - 2) * (N - 1)
 
     # -----------------------------------------------------------
     # 1. triangulation on the regular grid
     # -----------------------------------------------------------
-    col1   = np.kron([1, 1], np.arange(M - 1))
-    temp1  = np.kron([1, M + 1], np.ones(M - 1))
-    temp2  = np.kron([M + 1, M], np.ones(M - 1))
+    col1 = np.kron([1, 1], np.arange(M - 1))
+    temp1 = np.kron([1, M + 1], np.ones(M - 1))
+    temp2 = np.kron([M + 1, M], np.ones(M - 1))
     onecol = np.stack([col1, col1 + temp1, col1 + temp2], axis=1).astype(int)
 
     triangulation = np.tile(onecol, (N - 1, 1))
@@ -434,41 +709,51 @@ def conformal_map_indep_fixed_diagonals(
     ridx = np.repeat(np.arange(triangleCount), 3)
     cidx = triangulation.ravel()
 
-    Mreal = coo_matrix((ws_real.ravel(), (ridx, cidx)),
-                       shape=(triangleCount, vertexCount)).tocsr()
-    Mimag = coo_matrix((ws_imag.ravel(), (ridx, cidx)),
-                       shape=(triangleCount, vertexCount)).tocsr()
+    Mreal = coo_matrix(
+        (ws_real.ravel(), (ridx, cidx)), shape=(triangleCount, vertexCount)
+    ).tocsr()
+    Mimag = coo_matrix(
+        (ws_imag.ravel(), (ridx, cidx)), shape=(triangleCount, vertexCount)
+    ).tocsr()
 
     # -----------------------------------------------------------
     # 3. linear solver helper
     # -----------------------------------------------------------
-    def solve_mapping(fixed_pts: list[int],
-                      fixed_vals: np.ndarray,
-                      free_pts: np.ndarray) -> np.ndarray:
+    def solve_mapping(
+        fixed_pts: list[int], fixed_vals: np.ndarray, free_pts: np.ndarray
+    ) -> np.ndarray:
 
-        A = vstack([
-            hstack([Mreal[:, free_pts], -Mimag[:, free_pts]]),
-            hstack([Mimag[:, free_pts],  Mreal[:, free_pts]])
-        ])
+        A = vstack(
+            [
+                hstack([Mreal[:, free_pts], -Mimag[:, free_pts]]),
+                hstack([Mimag[:, free_pts], Mreal[:, free_pts]]),
+            ]
+        )
 
-        b_real = Mreal[:, fixed_pts] @ fixed_vals[:, 0] - \
-                 Mimag[:, fixed_pts] @ fixed_vals[:, 1]
-        b_imag = Mimag[:, fixed_pts] @ fixed_vals[:, 0] + \
-                 Mreal[:, fixed_pts] @ fixed_vals[:, 1]
+        b_real = (
+            Mreal[:, fixed_pts] @ fixed_vals[:, 0]
+            - Mimag[:, fixed_pts] @ fixed_vals[:, 1]
+        )
+        b_imag = (
+            Mimag[:, fixed_pts] @ fixed_vals[:, 0]
+            + Mreal[:, fixed_pts] @ fixed_vals[:, 1]
+        )
         b = -np.concatenate([b_real, b_imag])
 
+        # AtA is symmetric positive definite, so a sparse Cholesky applies and is
+        # several times faster than the general LU of scipy's spsolve.
+        #
+        # order="amd": each system is factorized once, so the default "best" pays
+        # METIS's ordering cost up front and never amortizes it.
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
-        if HAS_CHOLMOD:
-            sol = cho_solve(AtA, Atb)
-        else:
-            sol = spsolve(AtA, Atb)
+        sol = cho_solve(AtA, Atb, order="amd")
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
-        mapped[fixed_pts]    = fixed_vals
-        mapped[free_pts, 0]  = sol[:nf]
-        mapped[free_pts, 1]  = sol[nf:]
+        mapped[fixed_pts] = fixed_vals
+        mapped[free_pts, 0] = sol[:nf]
+        mapped[free_pts, 1] = sol[nf:]
         return mapped
 
     # -----------------------------------------------------------
@@ -476,19 +761,24 @@ def conformal_map_indep_fixed_diagonals(
     # -----------------------------------------------------------
     diag_scale = M / np.sqrt(M**2 + N**2)
 
-    main_fixed_pts  = [0, vertexCount - 1]
-    main_fixed_vals = np.array([
-        [xpos_new[0], ypos_new[0]],
-        [xpos_new[0] + mainDiagDist * diag_scale,
-         ypos_new[0] + mainDiagDist * diag_scale * N / M]
-    ])
+    main_fixed_pts = [0, vertexCount - 1]
+    main_fixed_vals = np.array(
+        [
+            [xpos_new[0], ypos_new[0]],
+            [
+                xpos_new[0] + mainDiagDist * diag_scale,
+                ypos_new[0] + mainDiagDist * diag_scale * N / M,
+            ],
+        ]
+    )
 
-    skew_fixed_pts  = [M - 1, vertexCount - M]
-    skew_fixed_vals = np.array([
-        [xpos_new[0] + skewDiagDist * diag_scale, ypos_new[0]],
-        [xpos_new[0],
-         ypos_new[0] + skewDiagDist * diag_scale * N / M]
-    ])
+    skew_fixed_pts = [M - 1, vertexCount - M]
+    skew_fixed_vals = np.array(
+        [
+            [xpos_new[0] + skewDiagDist * diag_scale, ypos_new[0]],
+            [xpos_new[0], ypos_new[0] + skewDiagDist * diag_scale * N / M],
+        ]
+    )
 
     # -----------------------------------------------------------
     # 5. branch on anchor count
@@ -496,17 +786,17 @@ def conformal_map_indep_fixed_diagonals(
     if n_anchors == 4:
         # --- historical behaviour: two solves, then average ----------
         free_main = np.setdiff1d(np.arange(vertexCount), main_fixed_pts)
-        map_main  = solve_mapping(main_fixed_pts, main_fixed_vals, free_main)
+        map_main = solve_mapping(main_fixed_pts, main_fixed_vals, free_main)
 
         free_skew = np.setdiff1d(np.arange(vertexCount), skew_fixed_pts)
-        map_skew  = solve_mapping(skew_fixed_pts, skew_fixed_vals, free_skew)
+        map_skew = solve_mapping(skew_fixed_pts, skew_fixed_vals, free_skew)
 
         mappedPositions = 0.5 * (map_main + map_skew)
 
     else:
         # --- single solve with additional anchors -------------------
-        fixed_pts  : list[int]       = main_fixed_pts + skew_fixed_pts
-        fixed_vals : list[np.ndarray] = [main_fixed_vals, skew_fixed_vals]
+        fixed_pts: list[int] = main_fixed_pts + skew_fixed_pts
+        fixed_vals: list[np.ndarray] = [main_fixed_vals, skew_fixed_vals]
 
         # add mid-lines (8 anchors) and quarter-lines (16 anchors)
         if n_anchors >= 8:
@@ -518,36 +808,44 @@ def conformal_map_indep_fixed_diagonals(
 
             # horizontals
             for c in mid_cols:
-                idx_left  = 0       + c * M
+                idx_left = 0 + c * M
                 idx_right = (M - 1) + c * M
                 dz = VZmesh[M - 1, c] - VZmesh[0, c]
-                length = np.sqrt((xpos[-1] - xpos[0])**2 + dz**2)
+                length = np.sqrt((xpos[-1] - xpos[0]) ** 2 + dz**2)
                 fixed_pts += [idx_left, idx_right]
-                fixed_vals.append(np.array([
-                    [xpos_new[0],                 ypos_new[c]],
-                    [xpos_new[0] + length,        ypos_new[c]]
-                ]))
+                fixed_vals.append(
+                    np.array(
+                        [
+                            [xpos_new[0], ypos_new[c]],
+                            [xpos_new[0] + length, ypos_new[c]],
+                        ]
+                    )
+                )
 
             # verticals
             for r in mid_rows:
-                idx_top    = r + 0 * M
+                idx_top = r + 0 * M
                 idx_bottom = r + (N - 1) * M
                 dz = VZmesh[r, N - 1] - VZmesh[r, 0]
-                length = np.sqrt((ypos[-1] - ypos[0])**2 + dz**2)
+                length = np.sqrt((ypos[-1] - ypos[0]) ** 2 + dz**2)
                 fixed_pts += [idx_top, idx_bottom]
-                fixed_vals.append(np.array([
-                    [xpos_new[r], ypos_new[0]],
-                    [xpos_new[r], ypos_new[0] + length]
-                ]))
+                fixed_vals.append(
+                    np.array(
+                        [
+                            [xpos_new[r], ypos_new[0]],
+                            [xpos_new[r], ypos_new[0] + length],
+                        ]
+                    )
+                )
 
         fixed_vals = np.vstack(fixed_vals)
-        free_pts   = np.setdiff1d(np.arange(vertexCount), fixed_pts)
+        free_pts = np.setdiff1d(np.arange(vertexCount), fixed_pts)
         mappedPositions = solve_mapping(fixed_pts, fixed_vals, free_pts)
 
     return mappedPositions
 
 
-def align_mapped_surface(    
+def align_mapped_surface(
     thisVZminmesh: np.ndarray,
     thisVZmaxmesh: np.ndarray,
     mappedMinPositions: np.ndarray,
@@ -555,7 +853,7 @@ def align_mapped_surface(
     xborders: list[int],
     yborders: list[int],
     conformal_jump: int = 1,
-    patch_size: int = 21
+    patch_size: int = 21,
 ) -> np.ndarray:
     """
     Shifts the second mapped surface (mappedMaxPositions) so that its local
@@ -568,10 +866,10 @@ def align_mapped_surface(
     thisVZmaxmesh : np.ndarray
         2D array of shape (X, Y), representing the second (maximum) surface.
     mappedMinPositions : np.ndarray
-        2D array of shape (X*Y, 2), the conformally mapped coordinates 
+        2D array of shape (X*Y, 2), the conformally mapped coordinates
         corresponding to the min surface.
     mappedMaxPositions : np.ndarray
-        2D array of shape (X*Y, 2), the conformally mapped coordinates 
+        2D array of shape (X*Y, 2), the conformally mapped coordinates
         corresponding to the max surface.
     xborders : list of int
         [x_min, x_max] bounding indices used to focus the alignment region.
@@ -585,13 +883,13 @@ def align_mapped_surface(
     Returns
     -------
     mappedMaxPositions : np.ndarray
-        Updated 2D array of shape (X*Y, 2) for the max surface, 
+        Updated 2D array of shape (X*Y, 2) for the max surface,
         after alignment to the min surface.
 
     Notes
     -----
     This step finds an offset (shift in x and y) that best aligns local slope
-    features from the two surfaces, by comparing gradients in a restricted region 
+    features from the two surfaces, by comparing gradients in a restricted region
     and choosing the position with minimal combined gradient magnitude.
     """
     patch_size = int(np.ceil(patch_size / conformal_jump))
@@ -600,8 +898,12 @@ def align_mapped_surface(
     pad_val_min = 10 * np.max(thisVZminmesh)
     pad_val_max = 10 * np.max(thisVZmaxmesh)
 
-    VZminmesh_padded = np.pad(thisVZminmesh, ((0, 1), (0, 1)), constant_values=pad_val_min)
-    VZmaxmesh_padded = np.pad(thisVZmaxmesh, ((0, 1), (0, 1)), constant_values=pad_val_max)
+    VZminmesh_padded = np.pad(
+        thisVZminmesh, ((0, 1), (0, 1)), constant_values=pad_val_min
+    )
+    VZmaxmesh_padded = np.pad(
+        thisVZmaxmesh, ((0, 1), (0, 1)), constant_values=pad_val_max
+    )
 
     # Gradient differences (dx + i*dy)
     dmin_dx = np.diff(VZminmesh_padded, axis=0)[:, :-1]
@@ -616,14 +918,18 @@ def align_mapped_surface(
     x1, x2 = xborders
     y1, y2 = yborders
 
-    dMinSurface_roi = dMinSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
-    dMaxSurface_roi = dMaxSurface[x1:x2+1:conformal_jump, y1:y2+1:conformal_jump]
+    dMinSurface_roi = dMinSurface[
+        x1 : x2 + 1 : conformal_jump, y1 : y2 + 1 : conformal_jump
+    ]
+    dMaxSurface_roi = dMaxSurface[
+        x1 : x2 + 1 : conformal_jump, y1 : y2 + 1 : conformal_jump
+    ]
 
     combined_slope = dMinSurface_roi + dMaxSurface_roi
 
     # Patch cost = sum of local gradients over patch
     kernel = np.ones((patch_size, patch_size))
-    patch_costs = convolve2d(combined_slope, kernel, mode='valid')
+    patch_costs = convolve2d(combined_slope, kernel, mode="valid")
 
     # # Map back to flattened index in 2D mesh
     # row, col are 0-based from Python
@@ -655,26 +961,26 @@ def align_mapped_surface(
 
 
 def build_mapping(
-    on_sac_surface: np.ndarray, # original `thisVZminmesh`  (ON‑Starburst layer)
-    off_sac_surface: np.ndarray, # original `thisVZmaxmesh`  (OFF‑Starburst layer)
+    on_sac_surface: np.ndarray,  # original `thisVZminmesh`  (ON-Starburst layer)
+    off_sac_surface: np.ndarray,  # original `thisVZmaxmesh`  (OFF-Starburst layer)
     bounds: np.ndarray | tuple[int, int, int, int],  # original `arborBoundaries`
-    conformal_jump: int = 1, # original `conformalJump`
-    n_anchors: int = 16, # number of anchor points for conformal mapping, options: 4, 8 or 16
+    conformal_jump: int = 1,  # original `conformalJump`
+    n_anchors: int = 16,  # number of anchor points for conformal mapping, options: 4, 8 or 16
     alignment_patch_size: int = 21,  # size of the local patch for alignment
     *,
     verbose: bool = False,
-    backward_compatible: bool = False  # for MATLAB compatibility
+    backward_compatible: bool = False,  # for MATLAB compatibility
 ) -> dict:
     """
-    Create a 2D conformal map that **flattens** the ON‑ and OFF‑Starburst Amacrine Cell (SAC) 
+    Create a 2D conformal map that **flattens** the ON- and OFF-Starburst Amacrine Cell (SAC)
     layers onto a common plane so their geometry can later be imposed on retinal arbors.
 
-    This is a refactored port of MATLAB **`calcWarpedSACsurfaces`**.  
+    This is a refactored port of MATLAB **`calcWarpedSACsurfaces`**.
     The mathematics and return values are preserved exactly; only names and documentation are clearer.
 
     Workflow
     --------
-    1. **Subsample** both SAC height‑fields within `bounds` at every `conformal_jump` pixels.
+    1. **Subsample** both SAC height-fields within `bounds` at every `conformal_jump` pixels.
     2. Measure the true 3D lengths of the main and skew diagonals on each subsampled surface.
     3. **Conformally map** the ON and OFF surfaces independently so those diagonals become straight with the measured lengths.
     4. **Align** the OFF map to the ON map by finding the x/y shift that minimises local slope mismatches.
@@ -689,13 +995,13 @@ def build_mapping(
     bounds : tuple[int, int, int, int] | np.ndarray
         *(xmin, xmax, ymin, ymax)* bounds of the region that actually contains the arbor.  (Formerly `arborBoundaries`).
     conformal_jump : int, default 1
-        Sub‑sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
+        Sub-sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
     n_anchors : int, default 16
         Number of anchor points used for the conformal mapping.
         Options are 4, 8 (default), or 16 anchors:
-            - 4   → original behaviour (two separate solves, then average)  
-            - 8   → add horizontal/vertical mid-lines (single solve)  
-            - 16  → also add the quarter-lines (single solve)
+            - 4   -> original behaviour (two separate solves, then average)
+            - 8   -> add horizontal/vertical mid-lines (single solve)
+            - 16  -> also add the quarter-lines (single solve)
     verbose : bool, default False
         If *True*, print timing information.
 
@@ -709,54 +1015,74 @@ def build_mapping(
         ``main_diag_dist`` / ``skew_diag_dist``
             Mean physical lengths of the main and skew diagonals used as conformal constraints.
         ``sampled_x_idx`` / ``sampled_y_idx``
-            The x‑ and y‑indices that were actually sampled and mapped.
+            The x- and y-indices that were actually sampled and mapped.
         ``on_sac_surface`` / ``off_sac_surface``
             The original (subsampled) height fields kept for debugging or visualisation.
     """
 
     if backward_compatible:
-        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1 # Convert to 0-based indexing
+        xmin, xmax, ymin, ymax = np.asarray(bounds) - 1  # Convert to 0-based indexing
     else:
         xmin, xmax, ymin, ymax = np.asarray(bounds)
 
     nx, ny = off_sac_surface.shape
-    sampled_x_idx = np.arange(max(xmin - 1, 0),  min(xmax + 1, nx - 1) + 1,
-                    conformal_jump, dtype=int)
-    sampled_y_idx = np.arange(max(ymin - 1, 0),  min(ymax + 1, ny - 1) + 1,
-                    conformal_jump, dtype=int)
+    sampled_x_idx = np.arange(
+        max(xmin - 1, 0), min(xmax + 1, nx - 1) + 1, conformal_jump, dtype=int
+    )
+    sampled_y_idx = np.arange(
+        max(ymin - 1, 0), min(ymax + 1, ny - 1) + 1, conformal_jump, dtype=int
+    )
 
     # probably not necessary but better ensure that sampled_x_idx, sampled_y_idx are within bounds
-    sampled_x_idx = sampled_x_idx[(sampled_x_idx >= 0) & (sampled_x_idx < on_sac_surface.shape[0])]
-    sampled_y_idx = sampled_y_idx[(sampled_y_idx >= 0) & (sampled_y_idx < on_sac_surface.shape[1])]
+    sampled_x_idx = sampled_x_idx[
+        (sampled_x_idx >= 0) & (sampled_x_idx < on_sac_surface.shape[0])
+    ]
+    sampled_y_idx = sampled_y_idx[
+        (sampled_y_idx >= 0) & (sampled_y_idx < on_sac_surface.shape[1])
+    ]
 
-    on_subsampled  =  on_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
+    on_subsampled = on_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
     off_subsampled = off_sac_surface[np.ix_(sampled_x_idx, sampled_y_idx)]
 
     # calculate the traveling distances on the diagonals of the two SAC surfaces
     start_time = time.time()
-    main_diag_dist_on, skew_diag_dist_on = calculate_diag_length(sampled_x_idx, sampled_y_idx, on_subsampled)
-    main_diag_dist_off, skew_diag_dist_off = calculate_diag_length(sampled_x_idx, sampled_y_idx, off_subsampled)
+    main_diag_dist_on, skew_diag_dist_on = calculate_diag_length(
+        sampled_x_idx, sampled_y_idx, on_subsampled
+    )
+    main_diag_dist_off, skew_diag_dist_off = calculate_diag_length(
+        sampled_x_idx, sampled_y_idx, off_subsampled
+    )
 
     main_diag_dist = np.mean([main_diag_dist_on, main_diag_dist_off])
     skew_diag_dist = np.mean([skew_diag_dist_on, skew_diag_dist_off])
 
     # quasi-conformally map individual SAC surfaces to planes
     if verbose:
-        print("↳ mapping ON (min) surface …")    
+        print("-> mapping ON (min) surface...")
         start_time = time.time()
     mapped_on = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, on_subsampled,
-        n_anchors=n_anchors, backward_compatible=backward_compatible,
+        float(main_diag_dist),
+        float(skew_diag_dist),
+        sampled_x_idx,
+        sampled_y_idx,
+        on_subsampled,
+        n_anchors=n_anchors,
+        backward_compatible=backward_compatible,
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
     if verbose:
-        print("↳ mapping OFF (max) surface …")
+        print("-> mapping OFF (max) surface...")
         start_time = time.time()
     mapped_off = conformal_map_indep_fixed_diagonals(
-        float(main_diag_dist), float(skew_diag_dist), sampled_x_idx, sampled_y_idx, off_subsampled,
-        n_anchors=n_anchors, backward_compatible=backward_compatible,
+        float(main_diag_dist),
+        float(skew_diag_dist),
+        sampled_x_idx,
+        sampled_y_idx,
+        off_subsampled,
+        n_anchors=n_anchors,
+        backward_compatible=backward_compatible,
     )
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
@@ -766,21 +1092,29 @@ def build_mapping(
 
     # Align OFF map to ON map (patch matching)
     map_off_aligned = align_mapped_surface(
-        on_sac_surface, off_sac_surface,
-        mapped_on, mapped_off,
-        x_limits, y_limits, conformal_jump, alignment_patch_size
+        on_sac_surface,
+        off_sac_surface,
+        mapped_on,
+        mapped_off,
+        x_limits,
+        y_limits,
+        conformal_jump,
+        alignment_patch_size,
     )
 
     return {
         "mapped_on": mapped_on,  # formerly `mappedMinPositions`
-        "mapped_off": map_off_aligned, # formerly `mappedMaxPositions`
-        "main_diag_dist": main_diag_dist, # same as MATLAB `mainDiagDist`
-        "skew_diag_dist": skew_diag_dist, # same as MATLAB `skewDiagDist`
-        "sampled_x_idx": sampled_x_idx, # formerly `thisx`
-        "sampled_y_idx": sampled_y_idx, # formerly `thisy`
-        "on_sac_surface": on_sac_surface, # formerly `thisVZminmesh`
-        "off_sac_surface": off_sac_surface, # formerly `thisVZmaxmesh`
+        "mapped_off": map_off_aligned,  # formerly `mappedMaxPositions`
+        "main_diag_dist": main_diag_dist,  # same as MATLAB `mainDiagDist`
+        "skew_diag_dist": skew_diag_dist,  # same as MATLAB `skewDiagDist`
+        "sampled_x_idx": sampled_x_idx,  # formerly `thisx`
+        "sampled_y_idx": sampled_y_idx,  # formerly `thisy`
+        "on_sac_surface": on_sac_surface,  # formerly `thisVZminmesh`
+        "off_sac_surface": off_sac_surface,  # formerly `thisVZmaxmesh`
         "n_anchors": n_anchors,
         "conformal_jump": conformal_jump,
-        "meta": {"mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"), "pywarper_version": _PYWARPER_VERSION}
+        "meta": {
+            "mapped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "pywarper_version": _PYWARPER_VERSION,
+        },
     }

@@ -17,7 +17,7 @@ def _segment_lengths(
         # remove soma from edges
         edges = edges[1:]
 
-    child = edges[:, 0].astype(int) - 1     # → 0-based
+    child = edges[:, 0].astype(int) - 1  # -> 0-based
     parent = edges[:, 1].astype(int) - 1
 
     density = np.zeros(nodes.shape[0], dtype=float)
@@ -31,7 +31,9 @@ def _segment_lengths(
 
     return density, mid
 
+
 # Convex hull
+
 
 def get_convex_hull(points: np.ndarray) -> np.ndarray:
     """Return the planar convex hull enclosing *points*.
@@ -44,7 +46,7 @@ def get_convex_hull(points: np.ndarray) -> np.ndarray:
     Returns
     -------
     hull : (M, 2) ndarray
-        Vertices of the convex hull ordered counter‑clockwise.  If *points*
+        Vertices of the convex hull ordered counter-clockwise.  If *points*
         contains < 3 entries, the input is returned unchanged.
     """
     if len(points) < 3:
@@ -55,13 +57,16 @@ def get_convex_hull(points: np.ndarray) -> np.ndarray:
 
 # -- internal polygon utilities -------------------------------------------
 
+
 def _polygon_area(vertices: np.ndarray) -> float:
     """Signed area of a simple polygon given by *vertices* (M × 2)."""
     x, y = vertices.T
     return 0.5 * (np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
 
 
-def _polygon_centroid(vertices: np.ndarray, signed_area: float | None = None) -> np.ndarray:
+def _polygon_centroid(
+    vertices: np.ndarray, signed_area: float | None = None
+) -> np.ndarray:
     """Centroid *x, y* of a simple polygon.
 
     The arithmetic mean is used when the polygon area is ~ 0.
@@ -82,6 +87,7 @@ def _polygon_centroid(vertices: np.ndarray, signed_area: float | None = None) ->
 
 # -- public polygon wrappers ----------------------------------------------
 
+
 def get_hull_area(hull: np.ndarray) -> float:
     """Unsigned area (µm²) of a convex *hull*."""
     return abs(_polygon_area(hull))
@@ -92,9 +98,13 @@ def get_hull_centroid(hull: np.ndarray) -> np.ndarray:
     area = _polygon_area(hull)
     return _polygon_centroid(hull, area)
 
-# Center‑of‑mass (COM) metrics
 
-def get_xy_center_of_mass(x: np.ndarray, y: np.ndarray, xy_dist: np.ndarray) -> np.ndarray:
+# Center-of-mass (COM) metrics
+
+
+def get_xy_center_of_mass(
+    x: np.ndarray, y: np.ndarray, xy_dist: np.ndarray
+) -> np.ndarray:
     """Center of mass in the retinal plane.
 
     Parameters
@@ -102,7 +112,7 @@ def get_xy_center_of_mass(x: np.ndarray, y: np.ndarray, xy_dist: np.ndarray) -> 
     x, y : (N,) ndarray
         Sample positions along each axis (µm).
     xy_dist : (N, N) ndarray
-        2‑D density map over *x* and *y*.
+        2-D density map over *x* and *y*.
 
     Returns
     -------
@@ -112,6 +122,7 @@ def get_xy_center_of_mass(x: np.ndarray, y: np.ndarray, xy_dist: np.ndarray) -> 
     com_x = xy_dist.sum(axis=1) @ x / xy_dist.sum()
     com_y = xy_dist.sum(axis=0) @ y / xy_dist.sum()
     return np.asarray([com_x, com_y])
+
 
 def get_z_center_of_mass(z_x: np.ndarray, z_dist: np.ndarray) -> float:
     """Center of mass along *z* (depth, µm)."""
@@ -127,10 +138,14 @@ def get_soma_to_stratification_depth(soma_z: float, com_z: float) -> float:
     """Absolute depth difference (µm) between soma and dendritic COM."""
     return float(abs(soma_z - com_z))
 
+
 # Morphology features
 
-def _build_adjacency(edge_pairs: list[tuple[int, int]], n_nodes: int) -> list[list[int]]:
-    """Return an undirected adjacency list from 0‑based *edge_pairs*."""
+
+def _build_adjacency(
+    edge_pairs: list[tuple[int, int]], n_nodes: int
+) -> list[list[int]]:
+    """Return an undirected adjacency list from 0-based *edge_pairs*."""
     adj: list[list[int]] = [[] for _ in range(n_nodes)]
     for u, v in edge_pairs:
         adj[u].append(v)
@@ -143,9 +158,10 @@ def get_branch_point_count(edges: np.ndarray) -> int:
 
     The soma (parent = –1) is excluded.
     """
-    parents = edges[edges[:, 1] > 0, 1].astype(int) - 1  # convert to 0‑based
+    parents = edges[edges[:, 1] > 0, 1].astype(int) - 1  # convert to 0-based
     child_counts = np.bincount(parents)
     return int(np.count_nonzero(child_counts >= 2))
+
 
 def get_dendritic_length(nodes: np.ndarray, edges: np.ndarray) -> float:
     """Total cable length (µm) of an SWC tree."""
@@ -153,14 +169,16 @@ def get_dendritic_length(nodes: np.ndarray, edges: np.ndarray) -> float:
     return float(density.sum())
 
 
-def get_irreducible_nodes(nodes: np.ndarray, edges: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Indices of *irreducible* nodes (degree ≠ 2 ∪ soma) and their coordinates.
+def get_irreducible_nodes(
+    nodes: np.ndarray, edges: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Indices of *irreducible* nodes (degree != 2 or soma) and their coordinates.
 
     Returns
     -------
     idx_1b : (K,) int
-        1‑based indices.
-    xyz : (K, 3) ndarray
+        1-based indices.
+    xyz : (K, 3) ndarray
         Corresponding coordinates (µm).
     """
     child = edges[:, 0].astype(int) - 1
@@ -179,27 +197,31 @@ def get_irreducible_nodes(nodes: np.ndarray, edges: np.ndarray) -> tuple[np.ndar
     idx_1b = np.flatnonzero(irreducible_mask) + 1
     return idx_1b, nodes[idx_1b - 1]
 
+
 # segment statistics
 
-def _segment_stats(nodes: np.ndarray, edges: np.ndarray
-                   ) -> tuple[float, np.ndarray, np.ndarray]:
+
+def _segment_stats(
+    nodes: np.ndarray, edges: np.ndarray
+) -> tuple[float, np.ndarray, np.ndarray]:
     """Internal helper that walks each irreducible segment once and returns:
-        • median segment length (µm)
-        • 1‑based indices of irreducible nodes (for convenience)
-        • tortuosities per segment
+    • median segment length (µm)
+    • 1-based indices of irreducible nodes (for convenience)
+    • tortuosities per segment
     """
     density, _ = _segment_lengths(nodes=nodes, edges=edges)
 
     child = edges[:, 0].astype(int) - 1
     parent = edges[:, 1].astype(int) - 1
-    edge_len = {tuple(sorted((c, p))): density[c]
-                for c, p in zip(child, parent) if p >= 0}
+    edge_len = {
+        tuple(sorted((c, p))): density[c] for c, p in zip(child, parent) if p >= 0
+    }
 
     N = nodes.shape[0]
     adj = _build_adjacency(list(edge_len.keys()), N)
     degree = np.fromiter((len(n) for n in adj), int, count=N)
     irreducible_mask = degree != 2
-    irreducible_mask[edges[parent == -1, 0] - 1] = True   # soma
+    irreducible_mask[edges[parent == -1, 0] - 1] = True  # soma
 
     visited = set()
     seg_lengths: list[float] = []
@@ -238,18 +260,22 @@ def get_median_branch_length(nodes: np.ndarray, edges: np.ndarray) -> float:
 def get_average_tortuosity(nodes: np.ndarray, edges: np.ndarray) -> float:
     """Average tortuosity of irreducible segments.
 
-    Tortuosity = path length / straight‑line distance.
-    For segments where the Euclidean distance is < 1e‑6 µm, the ratio
-    is ignored to avoid numerical blow‑up (returned average is over the
+    Tortuosity = path length / straight-line distance.
+    For segments where the Euclidean distance is < 1e-6 µm, the ratio
+    is ignored to avoid numerical blow-up (returned average is over the
     *remaining* segments).
     """
     _, _, torts = _segment_stats(nodes, edges)
     finite = torts[np.isfinite(torts)]
     return float(np.mean(finite)) if finite.size else 0.0
 
+
 # radial and angular features
 
-def get_typical_radius(nodes: np.ndarray, edges: np.ndarray, com_xy: np.ndarray) -> float:
+
+def get_typical_radius(
+    nodes: np.ndarray, edges: np.ndarray, com_xy: np.ndarray
+) -> float:
     """
     Root-mean-square planar distance (µm) of dendritic cable to COM(xy).
     """
@@ -258,12 +284,13 @@ def get_typical_radius(nodes: np.ndarray, edges: np.ndarray, com_xy: np.ndarray)
     dy = mid[:, 1] - com_xy[1]
     return float(np.sqrt(np.sum(density * (dx**2 + dy**2)) / density.sum()))
 
+
 def get_average_angle(nodes: np.ndarray, edges: np.ndarray) -> float:
     """Average positive angle (rad) at irreducible branch points.
 
     For each irreducible node that has **one upstream** irreducible parent and
-    **≥1 downstream** irreducible child(ren), compute the angle between the
-    (parent→node) and (node→child) vectors.  The feature is the mean of those
+    **>=1 downstream** irreducible child(ren), compute the angle between the
+    (parent->node) and (node->child) vectors.  The feature is the mean of those
     angles.  Tips (degree 1) contribute nothing; multifurcations contribute
     one angle per child branch.
     """
@@ -284,19 +311,19 @@ def get_average_angle(nodes: np.ndarray, edges: np.ndarray) -> float:
 
     avg_angles: list[float] = []
 
-    for n in irr_idx - 1:              # convert back to 0‑based
+    for n in irr_idx - 1:  # convert back to 0-based
         # upstream irreducible parent
         p = parent[n]
         while p >= 0 and not irr_mask[p]:
             p = parent[p]
-        if p < 0:                       # reached root without irreducible
+        if p < 0:  # reached root without irreducible
             continue
         parent_vec = nodes[p] - nodes[n]
         norm_p = np.linalg.norm(parent_vec)
         if norm_p < 1e-6:
             continue
 
-        # downstream irreducible children (could be ≥1)
+        # downstream irreducible children (could be >=1)
         for c0 in children[n]:
             c = c0
             while c >= 0 and not irr_mask[c]:

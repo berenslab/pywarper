@@ -3,29 +3,29 @@ pywarper.warpers
 ==============
 Spatial warping and profiling utilities for **neuronal skeleton reconstructions**.
 
-This module takes a neuronal tree (nodes+edges) and the previously‑computed
+This module takes a neuronal tree (nodes+edges) and the previously-computed
 ON/OFF Starburst Amacrine Cell (SAC) surface mapping in order to
 
 1. **Warp the skeleton into the flattened SAC coordinate frame** (`warp_nodes`).
-   Each node is locally re‑registered with a polynomial least‑squares fit
+   Each node is locally re-registered with a polynomial least-squares fit
    (`local_ls_registration`) that references both SAC layers so that depth is
    preserved relative to the curved retina.
 2. **Compute depth (z) profiles** (`get_z_profile`).  Edge lengths are first binned
-   directly (histogram) and then re‑estimated with a Kaiser–Bessel gridding
-   kernel to obtain a smooth 1‑D density across the inner plexiform layer.
+   directly (histogram) and then re-estimated with a Kaiser–Bessel gridding
+   kernel to obtain a smooth 1-D density across the inner plexiform layer.
 3. **Compute planar (xy) density maps** (`get_xy_profile`).  Dendritic length is
-   accumulated on a user‑defined 2‑D grid and optionally Gaussian‑smoothed for
+   accumulated on a user-defined 2-D grid and optionally Gaussian-smoothed for
    visualisation or group statistics.
 
 Key algorithms
 --------------
-* **Polynomial local registration** – For every node we fit a 2‑D polynomial
+* **Polynomial local registration** – For every node we fit a 2-D polynomial
   basis (up to a configurable `max_order`) to the positions of neighbouring
-  SAC‑band sample points, solving three separate least‑squares systems in one
+  SAC-band sample points, solving three separate least-squares systems in one
   go with `numpy.linalg.lstsq`.  A single **KDTree** (SciPy) accelerates the
   neighbourhood queries.
-* **Kaiser–Bessel gridding** – The 1‑D `gridder1d` function emulates the
-  non‑uniform FFT gridding scheme used by older MATLAB code, yielding the exact
+* **Kaiser–Bessel gridding** – The 1-D `gridder1d` function emulates the
+  non-uniform FFT gridding scheme used by older MATLAB code, yielding the exact
   same numerical output but in fully vectorised NumPy.
 """
 
@@ -56,7 +56,7 @@ def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
     Return the full 2-D polynomial basis up to total order *max_order*
     for coordinates (x, y).  Shape:  (len(x), n_terms)
 
-    Order layout ≡ original code:
+    Order layout matches the original code:
         [1,
          x, y,
          x²,  x·y,  y²,      # order 2
@@ -274,7 +274,7 @@ def normalize_nodes(
     normalized_nodes = nodes.copy().astype(float)
 
     # Compute the relative depth of each node
-    rel_depth = (nodes[:, 2] - med_z_on) / (med_z_off - med_z_on)  # 0→ON, 1→OFF
+    rel_depth = (nodes[:, 2] - med_z_on) / (med_z_off - med_z_on)  # 0->ON, 1->OFF
 
     # Rescale the z-coordinates to the normalized space
     z_phys = on_sac_pos + rel_depth * (off_sac_pos - on_sac_pos)  # µm in global frame
@@ -363,7 +363,7 @@ def warp_skeleton(
 
     nodes = (
         skel.nodes.astype(float) * skeleton_nodes_scale
-    )  # scale to the surface unit, which is often μm
+    )  # scale to the surface unit, which is often µm
 
     if verbose:
         print("[pywarper] Warping skeleton...")
@@ -451,11 +451,11 @@ def warp_skeleton(
 
 def warp_mesh(
     mesh: trimesh.Trimesh,  # mostly nm
-    surface_mapping: dict,  # mostly μm
+    surface_mapping: dict,  # mostly µm
     conformal_jump: int | None = None,
-    on_sac_pos: float = 0.0,  # μm
-    off_sac_pos: float = 12.0,  # μm
-    mesh_vertices_scale: float = 1.0,  # scale factor for mesh vertices, e.g., 1e-3 for nm to μm
+    on_sac_pos: float = 0.0,  # µm
+    off_sac_pos: float = 12.0,  # µm
+    mesh_vertices_scale: float = 1.0,  # scale factor for mesh vertices, e.g., 1e-3 for nm to µm
     backward_compatible: bool = False,
     verbose: bool = False,
 ) -> trimesh.Trimesh:
@@ -466,7 +466,7 @@ def warp_mesh(
 
     vertices = (
         mesh.vertices.astype(float) * mesh_vertices_scale
-    )  # scale to the surface unit, which is often μm
+    )  # scale to the surface unit, which is often µm
 
     if verbose:
         print("[pywarper] Warping mesh...")
@@ -557,17 +557,17 @@ def z_slince_volumes(
     Returns
     -------
     volumes : (K,) float
-        Union volume per *non‑empty* z‑slice (in unit³).
+        Union volume per *non-empty* z-slice (in unit³).
     mid     : (K, 3) float
-        Sample positions for each slice: (x̄, ȳ, z_center), where x̄,ȳ are
-        slice area‑weighted centroids and z_center is the slice center.
+        Sample positions for each slice: (x_bar, y_bar, z_center), where x_bar,y_bar are
+        slice area-weighted centroids and z_center is the slice center.
     """
     # choose radii column for voxelizer / bbox
     if radius_metric is None:
         radius_metric = skel.recommend_radius()[0]
     radii = np.asarray(skel.radii[radius_metric], dtype=np.float64).reshape(-1)
 
-    # tight auto‑bbox (like dx.volume/area)
+    # tight auto-bbox (like dx.volume/area)
     lo_nodes = (skel.nodes - radii[:, None]).min(axis=0)
     hi_nodes = (skel.nodes + radii[:, None]).max(axis=0)
     if include_soma and getattr(skel, "soma", None) is not None:
@@ -587,7 +587,7 @@ def z_slince_volumes(
     # volume per slice (occupied count × voxel volume)
     vol_all = occ.sum(axis=(0, 1)).astype(np.float64) * (h**3)  # (nz,)
 
-    # keep only non‑empty slices
+    # keep only non-empty slices
     mask = vol_all > 0.0
     if not mask.any():
         return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
@@ -597,7 +597,7 @@ def z_slince_volumes(
     # z center for each kept slice
     zc = lo[2] + (k + 0.5) * h
 
-    # area‑weighted centroids per kept slice (optional but nice to have)
+    # area-weighted centroids per kept slice (optional but nice to have)
     xs = lo[0] + (np.arange(nx) + 0.5) * h  # (nx,)
     ys = lo[1] + (np.arange(ny) + 0.5) * h  # (ny,)
     occ_sel = occ[:, :, mask]  # (nx, ny, K)
@@ -629,7 +629,7 @@ def xy_column_volume(
     vol : (K,) float
         Volume in each non-empty (x,y) column (integrated over z), unit³.
     mid : (K,3) float
-        (x_center, y_center, z̄) for that column, where z̄ is the z-centroid
+        (x_center, y_center, z_bar) for that column, where z_bar is the z-centroid
         of occupied voxels in the column (handy but not used by XY maps).
     """
     if radius_metric is None:
@@ -682,7 +682,7 @@ def gridder1d(
     n: int,
 ) -> np.ndarray:
     """
-    Kaiser–Bessel gridding kernel in 1-D   (α=2, W=5)
+    Kaiser–Bessel gridding kernel in 1-D   (alpha=2, W=5)
 
     Vectorised patch-accumulation: identical output, ~2× faster.
     """
@@ -743,7 +743,7 @@ def gridder1d(
     out[0] = out[-1] = 0.0  # edge artefacts
 
     # ------------------------------------------------------------------
-    # myifft  →  de-apodise  →  abs(myfft3)  (unchanged)
+    # myifft  ->  de-apodise  ->  abs(myfft3)  (unchanged)
     # ------------------------------------------------------------------
     u = n
     f = np.fft.ifftshift(np.fft.ifft(np.fft.ifftshift(out))) * np.sqrt(u)
@@ -759,7 +759,9 @@ def gridder1d(
 # =====================================================================
 
 
-def _split_path(path: list[int], xyz: np.ndarray, split_length: float) -> list[list[int]]:
+def _split_path(
+    path: list[int], xyz: np.ndarray, split_length: float
+) -> list[list[int]]:
     """
     Divide an ordered node path into n roughly equal sub-paths.
 
@@ -781,13 +783,15 @@ def _split_path(path: list[int], xyz: np.ndarray, split_length: float) -> list[l
     cut_idx = [0]
     for t in targets[1:-1]:
         idx = int(np.argmin(np.abs(cum - t)))
-        if idx > cut_idx[-1]:       # avoid duplicate split points
+        if idx > cut_idx[-1]:  # avoid duplicate split points
             cut_idx.append(idx)
     cut_idx.append(len(path) - 1)
 
-    return [path[cut_idx[i]: cut_idx[i + 1] + 1]
-            for i in range(len(cut_idx) - 1)
-            if cut_idx[i + 1] > cut_idx[i]]
+    return [
+        path[cut_idx[i] : cut_idx[i + 1] + 1]
+        for i in range(len(cut_idx) - 1)
+        if cut_idx[i + 1] > cut_idx[i]
+    ]
 
 
 def _orient_classify(
@@ -798,7 +802,7 @@ def _orient_classify(
     Branch-level orientation classifier.
 
     For each node i returns:
-    - vert[i] : |dz| / L for the (sub-)segment containing edge (i → parent[i]).
+    - vert[i] : |dz| / L for the (sub-)segment containing edge (i -> parent[i]).
                 NaN for the root (no parent).
     - tip[i]  : True if node i is in a terminal branch (ends at a leaf).
 
@@ -892,11 +896,11 @@ def get_z_profile(
     branch_split_length: float | None = None,  # µm
 ) -> dict:
     """
-    Compute a 1‑D depth profile.
+    Compute a 1-D depth profile.
 
     measure:
-        "length" – cable length per bin (histogram + KB‑smoothed).
-        "volume" – **union‑correct** morphology volume per bin (voxel union).
+        "length" – cable length per bin (histogram + KB-smoothed).
+        "volume" – **union-correct** morphology volume per bin (voxel union).
 
     orientation_threshold:
         If set (float in [0, 1]), also compute split profiles for
@@ -919,7 +923,7 @@ def get_z_profile(
       **do not double count** at branch junctions or soma contacts.
     * 'include_soma' defaults to False to match the 'length' convention
       (edges only). Set True if you want soma membrane/volume included.
-    * For stable plots, keep bin_size ≥ voxel_size (if you set voxel_size).
+    * For stable plots, keep bin_size >= voxel_size (if you set voxel_size).
     * orientation_threshold is only supported for measure='length'.
     """
 
@@ -994,25 +998,29 @@ def get_z_profile(
 
         vert_vals, tip_mask = _orient_classify(skel, branch_split_length)
         # vertical: not a tip AND branch |dz|/L > threshold
-        mask_v = np.isfinite(vert_vals) & (vert_vals > orientation_threshold) & ~tip_mask
+        mask_v = (
+            np.isfinite(vert_vals) & (vert_vals > orientation_threshold) & ~tip_mask
+        )
 
         v_hist, v_dist = _profile(density * mask_v)
         h_hist, h_dist = _profile(density * ~mask_v)
 
-        result.update({
-            "vlength_distribution": v_dist,
-            "vlength_histogram": v_hist,
-            "hlength_distribution": h_dist,
-            "hlength_histogram": h_hist,
-            "orientation_threshold": orientation_threshold,
-            "branch_split_length": branch_split_length,
-        })
+        result.update(
+            {
+                "vlength_distribution": v_dist,
+                "vlength_histogram": v_hist,
+                "hlength_distribution": h_dist,
+                "hlength_histogram": h_hist,
+                "orientation_threshold": orientation_threshold,
+                "branch_split_length": branch_split_length,
+            }
+        )
 
     return result
 
 
 def _edges_from_bin_size(lo: float, hi: float, bin_size: float) -> np.ndarray:
-    """Generate edges ≥ bin_size wide, last bin clipped to *hi*."""
+    """Generate edges >= bin_size wide, last bin clipped to *hi*."""
     n = int(np.ceil((hi - lo) / bin_size))
     edges = lo + np.arange(n + 1) * bin_size
     edges[-1] = hi  # ensure inclusion
@@ -1038,15 +1046,15 @@ def get_xy_profile(
     Parameters
     ----------
     extents
-        Fixed window ``[xmin, xmax, ymin, ymax]`` (µm).  *None* → tight box.
+        Fixed window ``[xmin, xmax, ymin, ymax]`` (µm).  *None* -> tight box.
     bin_size
         Side length of each square bin (µm).  `edges = lo + k·bin_size`.
         The window is *expanded* to the next multiple so that every bin is
         exactly `bin_size` wide.  (This guarantees comparability.)
     smooth
-        σ of the Gaussian kernel (bins) applied to the histogram.
+        sigma of the Gaussian kernel (bins) applied to the histogram.
     measure:
-        "length" – dendritic cable length per bin (histogram → Gaussian smooth).
+        "length" – dendritic cable length per bin (histogram -> Gaussian smooth).
         "volume" – **union-correct** morphology volume per bin (voxel union),
                    integrated along z, then binned in x-y.
 
@@ -1105,7 +1113,7 @@ def get_xy_profile(
         "distribution": xy_dist,
         "histogram": xy_hist,
         "extents": [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]],
-        "n_bins": (len(x), len(y)),  # may differ if dx ≠ dy
+        "n_bins": (len(x), len(y)),  # may differ if dx != dy
         "bin_size": bin_size,
         "smooth": smooth,
         "measure": measure,
@@ -1124,7 +1132,7 @@ def hdr(z_centres, z_density, mass=0.95):
     ----------
     z_centres : (N,) bin centres (µm)
     z_density : (N,) density per bin (any units)
-    mass      : float, 0 < mass ≤ 1 (e.g. 0.95)
+    mass      : float, 0 < mass <= 1 (e.g. 0.95)
 
     Example
     -------
@@ -1132,7 +1140,7 @@ def hdr(z_centres, z_density, mass=0.95):
     [array([ -2.1,  1.7]),   # ON sheet
      array([ 10.3, 13.9])]   # OFF sheet
     """
-    p = z_density / z_density.sum()  # normalise → probability
+    p = z_density / z_density.sum()  # normalise -> probability
     order = np.argsort(p)[::-1]  # bins from high to low density
 
     selected = []
@@ -1155,7 +1163,7 @@ def hdr(z_centres, z_density, mass=0.95):
 
 
 class Warper:
-    """High‑level interface around *pywarper* for IPL flattening."""
+    """High-level interface around *pywarper* for IPL flattening."""
 
     def __init__(
         self,
@@ -1173,6 +1181,8 @@ class Warper:
         self.voxel_resolution = voxel_resolution
         self.verbose = verbose
         self.swc_path = swc_path
+        # what fit_surfaces() settled on, per band; folded into the mapping meta
+        self.surface_fit: dict[str, dict] = {}
 
         if off_sac_points is not None:
             self.off_sac_points = self._as_xyz(off_sac_points)
@@ -1181,7 +1191,7 @@ class Warper:
 
         if swc_path is not None:
             self.swc_path = swc_path
-            self.load_swc(swc_path)  # raw SWC → self.nodes / edges / radii
+            self.load_swc(swc_path)  # raw SWC -> self.nodes / edges / radii
         else:
             self.swc_path = None
 
@@ -1190,13 +1200,13 @@ class Warper:
         """Load the skeleton from *swc_path*."""
 
         if self.verbose:
-            print(f"[pywarper] Loading skeleton → {self.swc_path}")
+            print(f"[pywarper] Loading skeleton -> {self.swc_path}")
 
         if swc_path is None:
             swc_path = self.swc_path
 
         if swc_path is not None:
-            self.skeleton = sk.io.load_swc(swc_path)
+            self.skeleton = sk.io.load_skeleton_swc(swc_path)
         else:
             raise ValueError("SWC path must be provided to load the skeleton.")
 
@@ -1210,13 +1220,13 @@ class Warper:
         if isinstance(data, (tuple, list)) and len(data) == 3:
             return map(np.asarray, data)  # type: ignore[arg-type]
         raise TypeError(
-            "SAC data must be a mapping with keys x/y/z or a 3‑tuple of arrays."
+            "SAC data must be a mapping with keys x/y/z or a 3-tuple of arrays."
         )
 
     def load_sac(self, off_sac_points, on_sac_points) -> "Warper":
         """Load the SAC meshes from *off_sac_points* and *on_sac_points*."""
         if self.verbose:
-            print("[pywarper] Loading SAC meshes …")
+            print("[pywarper] Loading SAC meshes...")
         self.off_sac_points = self._as_xyz(off_sac_points)
         self.on_sac_points = self._as_xyz(on_sac_points)
         return self
@@ -1231,7 +1241,7 @@ class Warper:
         path = Path(filepath)
 
         if path.suffix.lower() == ".swc":
-            self.warped_skeleton = sk.io.load_swc(path)
+            self.warped_skeleton = sk.io.load_skeleton_swc(path)
 
             if (med_z_on is not None) and (med_z_off is not None):
                 self.warped_skeleton.extra["med_z_on"] = float(med_z_on)
@@ -1243,7 +1253,7 @@ class Warper:
             self.warped_skeleton = sk.io.load_npz(path)
 
         if self.verbose:
-            print(f"[pywarper] Loaded warped skeleton → {path}")
+            print(f"[pywarper] Loaded warped skeleton -> {path}")
 
     # ---------------------------- Core -----------------------------------
 
@@ -1251,49 +1261,71 @@ class Warper:
         self,
         xmax: int | float | None = None,
         ymax: int | float | None = None,
-        stride: int = 3,
-        smoothness: int = 15,
+        method: str = "gridfit",
+        stride: int | None = None,
+        smoothness: int | float | str | None = None,
+        gamma: float | None = None,
+        k: int | tuple[int, int] | None = None,
+        bs: str | None = None,
         backward_compatible: bool = False,
     ) -> "Warper":
-        """Fit ON / OFF SAC meshes with *pygridfit*."""
+        """Fit the ON / OFF SAC meshes.
+
+        Parameters
+        ----------
+        method : {"gridfit", "gam"}, default="gridfit"
+            Which fitter to use, see :func:`pywarper.surface.fit_sac_surface`.
+        stride, smoothness : optional
+            ``"gridfit"`` settings; default to 3 and 15 here. Pass
+            ``smoothness="auto"`` to select it from the data instead -- what each
+            band settled on lands in ``self.surface_fit[band]``, since the two are
+            fitted separately and need not agree. Rejected under ``"gam"``.
+        gamma : float, optional
+            ``"gridfit"`` under ``smoothness="auto"`` only; the length scale the
+            selection is optimal for. See :func:`pywarper.surface.fit_sac_surface`.
+        k, bs : optional
+            ``"gam"`` settings; default to 100 and "tp". Rejected under
+            ``"gridfit"``.
+        """
         if self.verbose:
-            print("[pywarper] Fitting SAC surfaces …")
+            print("[pywarper] Fitting SAC surfaces...")
 
         if backward_compatible is False and (xmax is None or ymax is None):
             # use the bounding box of the skeleton
             xmax = max(self.off_sac_points[0].max(), self.on_sac_points[0].max())
             ymax = max(self.off_sac_points[1].max(), self.on_sac_points[1].max())
 
-        _t0 = time.time()
-        self.off_sac_surface, *_ = fit_sac_surface(
-            x=self.off_sac_points[0],
-            y=self.off_sac_points[1],
-            z=self.off_sac_points[2],
-            stride=stride,
-            smoothness=smoothness,
-            xmax=xmax,
-            ymax=ymax,
-            backward_compatible=backward_compatible,
-        )
-        if self.verbose:
-            print(
-                f"↳ fitting OFF (max) surface\n    done in {time.time() - _t0:.2f} seconds."
-            )
+        if method == "gridfit":
+            stride = 3 if stride is None else stride
+            smoothness = 15 if smoothness is None else smoothness
 
-        _t0 = time.time()
-        self.on_sac_surface, *_ = fit_sac_surface(
-            x=self.on_sac_points[0],
-            y=self.on_sac_points[1],
-            z=self.on_sac_points[2],
-            smoothness=smoothness,
-            xmax=xmax,
-            ymax=ymax,
-            backward_compatible=backward_compatible,
-        )
-        if self.verbose:
-            print(
-                f"↳ fitting ON (min) surface\n    done in {time.time() - _t0:.2f} seconds."
+        self.surface_fit = {}
+        for band, points, label in (
+            ("off", self.off_sac_points, "OFF (max)"),
+            ("on", self.on_sac_points, "ON (min)"),
+        ):
+            _t0 = time.time()
+            surface = fit_sac_surface(
+                x=points[0],
+                y=points[1],
+                z=points[2],
+                xmax=xmax,
+                ymax=ymax,
+                method=method,
+                stride=stride,
+                smoothness=smoothness,
+                gamma=gamma,
+                k=k,
+                bs=bs,
+                backward_compatible=backward_compatible,
             )
+            setattr(self, f"{band}_sac_surface", surface.zmesh)
+            setattr(self, f"{band}_sac_surface_se", surface.se)
+            self.surface_fit[band] = surface.summary
+            if self.verbose:
+                print(
+                    f"-> fitting {label} surface\n    done in {time.time() - _t0:.2f} seconds."
+                )
         return self
 
     def build_mapping(
@@ -1303,7 +1335,7 @@ class Warper:
         n_anchors: int = 16,
         backward_compatible: bool = False,
     ) -> "Warper":
-        """Create the quasi‑conformal surface mapping."""
+        """Create the quasi-conformal surface mapping."""
         if self.off_sac_surface is None or self.on_sac_surface is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
 
@@ -1328,11 +1360,11 @@ class Warper:
             bounds = np.asarray(bounds, dtype=float)
             if bounds.shape != (4,):
                 raise ValueError(
-                    "Bounds must be a 4‑element array or tuple (x_min, x_max, y_min, y_max)."
+                    "Bounds must be a 4-element array or tuple (x_min, x_max, y_min, y_max)."
                 )
 
         if self.verbose:
-            print("[pywarper] Building mapping …")
+            print("[pywarper] Building mapping...")
         self.mapping: dict = build_mapping(
             self.on_sac_surface,
             self.off_sac_surface,
@@ -1342,6 +1374,9 @@ class Warper:
             backward_compatible=backward_compatible,
             verbose=self.verbose,
         )
+        if self.surface_fit:
+            # so a warped skeleton records how its surfaces were fitted
+            self.mapping["meta"]["surface_fit"] = self.surface_fit
         return self
 
     def warp_skeleton(

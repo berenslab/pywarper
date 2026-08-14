@@ -70,12 +70,17 @@ def _prepare_unwarp_inputs(
         raise ValueError("nodes must be an (N, 3) array.")
 
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    on_input_pts, off_input_pts, on_output_pts, off_output_pts, map_med_z_on, map_med_z_off = (
-        build_surface_correspondences(
-            surface_mapping,
-            conformal_jump=resolved_jump,
-            backward_compatible=backward_compatible,
-        )
+    (
+        on_input_pts,
+        off_input_pts,
+        on_output_pts,
+        off_output_pts,
+        map_med_z_on,
+        map_med_z_off,
+    ) = build_surface_correspondences(
+        surface_mapping,
+        conformal_jump=resolved_jump,
+        backward_compatible=backward_compatible,
     )
 
     prenormed_nodes = denormalize_nodes(
@@ -200,7 +205,7 @@ def unwarp_nodes(
 def _coerce_voxel_resolution(
     voxel_resolution: float
     | list[float | int]
-    | tuple[float | int, float | int, float | int]
+    | tuple[float | int, float | int, float | int],
 ) -> np.ndarray:
     voxel_res = np.asarray(voxel_resolution, dtype=float)
     if voxel_res.ndim == 0:
