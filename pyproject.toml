@@ -29,6 +29,18 @@ dev = [
     "watermark>=2.5.0",
 ]
 
+[tool.uv]
+# Declared as runtime deps by skeliner<=0.3.1 but never imported by it. Drop
+# this once the skeliner floor is a release that no longer declares them.
+exclude-dependencies = [
+    "fastapi",
+    "flake8",
+    "jupyter",
+    "jupyterlab",
+    "notebook",
+    "pandas",
+]
+
 [tool.ruff]
 line-length = 88
 extend-exclude = ["notebooks"]
