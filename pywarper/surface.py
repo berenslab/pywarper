@@ -628,7 +628,7 @@ def conformal_map_indep_fixed_diagonals(
     ypos: np.ndarray,
     VZmesh: np.ndarray,
     *,
-    n_anchors: int = 16,  # 4, 8 (default) or 16
+    n_anchors: int = 16,
     backward_compatible: bool = False,
 ) -> np.ndarray:
     """
@@ -650,10 +650,11 @@ def conformal_map_indep_fixed_diagonals(
         2D array of shape (M, N), representing z-values for each (x, y).
     n_anchors : int, default=16
         Number of anchor points to use for the conformal mapping.
-        Options are 4, 8 (default), or 16 anchors.
+        Options are 4, 8 or 16 anchors.
             - 4   -> original behaviour (two separate solves, then average)
             - 8   -> add horizontal/vertical mid-lines (single solve)
             - 16  -> also add the quarter-lines (single solve)
+        The extra lines are pinned at their length along the surface.
 
     Returns
     -------
@@ -806,12 +807,14 @@ def conformal_map_indep_fixed_diagonals(
                 mid_cols += [N // 4, 3 * N // 4]
                 mid_rows += [M // 4, 3 * M // 4]
 
+            # Pinned at the length travelled along the surface, as the diagonals
+            # are; the chord between the endpoints would shrink the map wherever
+            # the line dips between them.
             # horizontals
             for c in mid_cols:
                 idx_left = 0 + c * M
                 idx_right = (M - 1) + c * M
-                dz = VZmesh[M - 1, c] - VZmesh[0, c]
-                length = np.sqrt((xpos[-1] - xpos[0]) ** 2 + dz**2)
+                length = np.sqrt(np.diff(xpos) ** 2 + np.diff(VZmesh[:, c]) ** 2).sum()
                 fixed_pts += [idx_left, idx_right]
                 fixed_vals.append(
                     np.array(
@@ -826,8 +829,7 @@ def conformal_map_indep_fixed_diagonals(
             for r in mid_rows:
                 idx_top = r + 0 * M
                 idx_bottom = r + (N - 1) * M
-                dz = VZmesh[r, N - 1] - VZmesh[r, 0]
-                length = np.sqrt((ypos[-1] - ypos[0]) ** 2 + dz**2)
+                length = np.sqrt(np.diff(ypos) ** 2 + np.diff(VZmesh[r, :]) ** 2).sum()
                 fixed_pts += [idx_top, idx_bottom]
                 fixed_vals.append(
                     np.array(
@@ -998,7 +1000,7 @@ def build_mapping(
         Sub-sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
     n_anchors : int, default 16
         Number of anchor points used for the conformal mapping.
-        Options are 4, 8 (default), or 16 anchors:
+        Options are 4, 8 or 16 anchors:
             - 4   -> original behaviour (two separate solves, then average)
             - 8   -> add horizontal/vertical mid-lines (single solve)
             - 16  -> also add the quarter-lines (single solve)

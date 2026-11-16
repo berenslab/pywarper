@@ -43,7 +43,7 @@ from scipy.spatial import KDTree
 from scipy.special import i0
 from skeliner._core import _bfs_parents
 from skeliner.dataclass import Skeleton
-from skeliner.dx import _ellipsoid_aabb, _voxelize_union
+from skeliner.dx import _choose_voxel_size, _ellipsoid_aabb
 
 from .surface import build_mapping, fit_sac_surface
 from .utils import build_surface_correspondences, resolve_conformal_jump
@@ -544,6 +544,150 @@ def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
     return lengths, mid
 
 
+def _voxelize_union(
+    skel,
+    radii: np.ndarray,
+    lo: np.ndarray,
+    hi: np.ndarray,
+    *,
+    voxel_size: float | None,
+    include_soma: bool,
+):
+    """
+    Boolean occupancy grid for the union of edge frusta and (optionally) soma,
+    inside [lo, hi].  Returns (occ, h, (nx,ny,nz), lo, hi).
+    """
+    h, (nx, ny, nz) = _choose_voxel_size(radii, lo, hi, user_voxel=voxel_size)
+    xs = lo[0] + (np.arange(nx) + 0.5) * h
+    ys = lo[1] + (np.arange(ny) + 0.5) * h
+    zs = lo[2] + (np.arange(nz) + 0.5) * h
+
+    occ = np.zeros((nx, ny, nz), dtype=bool)
+    nodes = skel.nodes.astype(np.float64, copy=False)
+    edges = skel.edges.astype(np.int64, copy=False)
+
+    # ---------------- helpers ----------------
+    def _range_x(x0, x1):
+        i0 = int(max(0, np.floor((x0 - lo[0]) / h)))
+        i1 = int(min(nx - 1, np.floor((x1 - lo[0]) / h)))
+        return i0, i1
+
+    def _range_y(y0, y1):
+        j0 = int(max(0, np.floor((y0 - lo[1]) / h)))
+        j1 = int(min(ny - 1, np.floor((y1 - lo[1]) / h)))
+        return j0, j1
+
+    def _range_z(z0, z1):
+        k0 = int(max(0, np.floor((z0 - lo[2]) / h)))
+        k1 = int(min(nz - 1, np.floor((z1 - lo[2]) / h)))
+        return k0, k1
+
+    # --------- precompute soma mask once (if there is a soma) ------------
+    soma_slice = None
+    soma_mask = None
+    if getattr(skel, "soma", None) is not None:
+        slo, shi = _ellipsoid_aabb(skel.soma)
+        # clip to global bbox
+        slo = np.maximum(slo, lo)
+        shi = np.minimum(shi, hi)
+        i0, i1 = _range_x(slo[0], shi[0])
+        j0, j1 = _range_y(slo[1], shi[1])
+        k0, k1 = _range_z(slo[2], shi[2])
+
+        if (i1 >= i0) and (j1 >= j0) and (k1 >= k0):
+            # broadcasted coordinate slabs (no big meshgrid; uses ogrid)
+            xi = xs[i0 : i1 + 1][:, None, None]
+            yj = ys[j0 : j1 + 1][None, :, None]
+            zk = zs[k0 : k1 + 1][None, None, :]
+
+            cx, cy, cz = skel.soma.center
+            Rt = skel.soma.R.T  # 3x3
+            ax, ay, az = skel.soma.axes
+            ax2, ay2, az2 = ax * ax, ay * ay, az * az
+
+            dx = xi - cx
+            dy = yj - cy
+            dz = zk - cz
+
+            # rotate into soma body-frame: u = R^T (x - c)
+            ux = Rt[0, 0] * dx + Rt[0, 1] * dy + Rt[0, 2] * dz
+            uy = Rt[1, 0] * dx + Rt[1, 1] * dy + Rt[1, 2] * dz
+            uz = Rt[2, 0] * dx + Rt[2, 1] * dy + Rt[2, 2] * dz
+
+            soma_mask = (ux * ux) / ax2 + (uy * uy) / ay2 + (uz * uz) / az2 <= 1.0
+            soma_slice = (slice(i0, i1 + 1), slice(j0, j1 + 1), slice(k0, k1 + 1))
+
+    # If soma is to be included, OR it now.
+    if include_soma and soma_mask is not None:
+        occ[soma_slice] |= soma_mask
+
+    # ---------------- rasterize every edge (broadcasted) -----------------
+    for i, j in edges:
+        a = nodes[i]
+        b = nodes[j]
+        r0 = float(radii[i])
+        r1 = float(radii[j])
+
+        rmax = max(r0, r1)
+        if not np.isfinite(rmax) or rmax < 0.0:
+            continue
+
+        # edge AABB padded by rmax, clipped to [lo,hi]
+        lo_e = np.maximum(np.minimum(a, b) - rmax, lo)
+        hi_e = np.minimum(np.maximum(a, b) + rmax, hi)
+        if np.any(lo_e > hi_e):
+            continue
+
+        ii0, ii1 = _range_x(lo_e[0], hi_e[0])
+        jj0, jj1 = _range_y(lo_e[1], hi_e[1])
+        kk0, kk1 = _range_z(lo_e[2], hi_e[2])
+        if (ii1 < ii0) or (jj1 < jj0) or (kk1 < kk0):
+            continue
+
+        xi = xs[ii0 : ii1 + 1][:, None, None]
+        yj = ys[jj0 : jj1 + 1][None, :, None]
+        zk = zs[kk0 : kk1 + 1][None, None, :]
+
+        v = b - a
+        L2 = float(v @ v)
+        if L2 <= 1e-24:
+            # degenerate: paint a ball of radius rmax at 'a'
+            dx = xi - a[0]
+            dy = yj - a[1]
+            dz = zk - a[2]
+            d2 = dx * dx + dy * dy + dz * dz
+            mask = d2 <= (rmax * rmax)
+            occ[ii0 : ii1 + 1, jj0 : jj1 + 1, kk0 : kk1 + 1] |= mask
+            continue
+
+        vx, vy, vz = v
+        # projection parameter s (broadcasted), then clamp to [0,1]
+        dx = xi - a[0]
+        dy = yj - a[1]
+        dz = zk - a[2]
+        s = (dx * vx + dy * vy + dz * vz) / L2
+        # clip in-place to save a temporary
+        np.clip(s, 0.0, 1.0, out=s)
+
+        # distance from voxel center to closest point on segment
+        rx = dx - s * vx
+        ry = dy - s * vy
+        rz = dz - s * vz
+        d2 = rx * rx + ry * ry + rz * rz
+
+        # linear radius along the frustum
+        r = r0 + s * (r1 - r0)
+        mask = d2 <= (r * r)
+
+        occ[ii0 : ii1 + 1, jj0 : jj1 + 1, kk0 : kk1 + 1] |= mask
+
+    # If soma is to be excluded, carve it out once (reuses precomputed mask).
+    if (not include_soma) and (soma_mask is not None):
+        occ[soma_slice] &= ~soma_mask
+
+    return occ, float(h), (int(nx), int(ny), int(nz)), lo, hi
+
+
 def z_slince_volumes(
     skel: Skeleton,
     *,
@@ -919,7 +1063,7 @@ def get_z_profile(
 
     Notes
     -----
-    * volume uses a single voxelization (dx._voxelize_union) and
+    * volume uses a single voxelization (_voxelize_union) and
       **do not double count** at branch junctions or soma contacts.
     * 'include_soma' defaults to False to match the 'length' convention
       (edges only). Set True if you want soma membrane/volume included.
