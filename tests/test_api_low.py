@@ -1,10 +1,11 @@
 import numpy as np
+import pytest
 import scipy.io
 import skeliner as sk
 
-from pywarper.surface import build_mapping, fit_sac_surface
+from pywarper.surface import build_mapping, fit_sac_surface, map_distortion
 from pywarper.utils import read_sumbul_et_al_chat_bands
-from pywarper.warpers import warp_skeleton
+from pywarper.warpers import get_coverage, warp_skeleton
 
 
 def test_skeleton():
@@ -154,3 +155,117 @@ def test_skeleton():
 
     _assert_mapping_equal(skel.node2verts, warped_skeleton.node2verts, "node2verts")
     _assert_mapping_equal(skel.vert2node, warped_skeleton.vert2node, "vert2node")
+
+
+def _two_dendrites() -> sk.Skeleton:
+    """Two straight dendrites at mid-depth, x = 10 and x = 30, joined at y = 30."""
+    from skeliner.dataclass import Skeleton, Soma
+
+    a = np.column_stack([np.full(21, 10.0), np.arange(10.0, 31.0), np.full(21, 15.0)])
+    b = np.column_stack(
+        [np.full(21, 30.0), np.arange(30.0, 9.0, -1.0), np.full(21, 15.0)]
+    )
+    nodes = np.vstack([a, b])
+    n = len(nodes)
+    radii = np.full(n, 1.0)
+    return Skeleton(
+        soma=Soma(center=nodes[0].copy(), axes=np.ones(3), R=np.eye(3), verts=None),
+        nodes=nodes,
+        radii={"median": radii, "mean": radii.copy(), "trim": radii.copy()},
+        edges=np.column_stack([np.arange(n - 1), np.arange(1, n)]),
+        ntype=np.ones(n, dtype=int),
+    )
+
+
+def test_coverage_records_volume_faces_and_unobserved_band():
+    on = np.full((40, 40), 10.0)
+    off = np.full((40, 40), 20.0)
+    off_support = np.ones((40, 40), dtype=bool)
+    off_support[20:, :] = False
+    mapping = build_mapping(
+        on,
+        off,
+        [0, 39, 0, 39],
+        conformal_jump=1,
+        volume_z=(5.0, 22.0),
+        off_support=off_support,
+    )
+    skel = _two_dendrites()
+    warped = warp_skeleton(skel, mapping)
+
+    # a skeleton lying on a single depth still gets a finite profile
+    assert np.isfinite(warped.extra["z_profiles"]["length"]["distribution"]).all()
+
+    coverage = warped.extra["coverage"]
+    # faces at z = 5 and 22 around bands 10 apart, ON at 0 and OFF at 12
+    assert np.allclose(coverage["depth"], [-6.0, 14.4])
+    assert np.array_equal(coverage["off_support"], skel.nodes[:, 0] < 20)
+    assert "on_support" not in coverage
+
+    inside = get_coverage(warped, extent=(-5.0, 14.0))
+    assert inside["cut_below"] == 0.0 and inside["cut_above"] == 0.0
+    outside = get_coverage(warped, extent=(-8.0, 16.0))
+    assert outside["cut_below"] == 1.0 and outside["cut_above"] == 1.0
+    # the x = 30 dendrite and the edge that reaches it: 40 of 60 of cable
+    assert np.isclose(outside["off_unsupported"], 40 / 60)
+    assert np.isnan(outside["on_unsupported"])
+
+    one_face = build_mapping(
+        on, off, [0, 39, 0, 39], conformal_jump=1, volume_z=(None, 22.0)
+    )
+    depth = warp_skeleton(skel, one_face).extra["coverage"]["depth"]
+    assert np.all(depth[:, 0] == -np.inf) and np.allclose(depth[:, 1], 14.4)
+
+    with pytest.raises(ValueError, match="off_support"):
+        build_mapping(on, off, [0, 39, 0, 39], off_support=off_support[:-1])
+
+
+def test_tilted_plane_flattens_without_stretch():
+    """A tilted plane is developable: every anchoring keeps lengths and angles."""
+    x, y = np.meshgrid(np.arange(60.0), np.arange(60.0), indexing="ij")
+    slope = np.tan(np.radians(15.0))
+    on = slope * (0.8 * x + 0.6 * y) + 10.0
+    off = on + 12.0
+    for n_anchors, tol in ((16, 1e-6), (8, 1e-6), (4, 1e-3)):
+        mapping = build_mapping(
+            on, off, [0, 59, 0, 59], conformal_jump=1, n_anchors=n_anchors
+        )
+        for band in ("on", "off"):
+            summary = map_distortion(mapping)[band]["summary"]
+            assert abs(summary["length_scale_p1"] - 1.0) < tol, (n_anchors, summary)
+            assert abs(summary["length_scale_p99"] - 1.0) < tol, (n_anchors, summary)
+            assert summary["anisotropy_p99"] < 1.0 + tol, (n_anchors, summary)
+
+
+def test_extra_surfaces_set_depth_piecewise():
+    from pywarper.unwarper import unwarp_nodes
+    from pywarper.warpers import normalize_nodes, warp_nodes
+
+    on = np.full((40, 40), 10.0)
+    off = np.full((40, 40), 20.0)
+    extra = {
+        "deep": (np.full((40, 40), 4.0), -0.5),  # lands at -6 with the bands at 0, 12
+        "outer": (np.full((40, 40), 26.0), 1.75),  # lands at 21
+    }
+    mapping = build_mapping(
+        on,
+        off,
+        [0, 39, 0, 39],
+        conformal_jump=1,
+        volume_z=(2.0, 30.0),
+        extra_surfaces=extra,
+    )
+    z = np.array([2.0, 4.0, 7.0, 10.0, 15.0, 20.0, 23.0, 26.0, 30.0])
+    nodes = np.column_stack([np.full(len(z), 20.0), np.full(len(z), 20.0), z])
+    warped, med_on, med_off = warp_nodes(nodes, mapping)
+    depth = normalize_nodes(warped, med_on, med_off)[:, 2]
+    # each layer lands on its depth, straight lines between, outermost interval beyond
+    assert np.allclose(depth, [-8.0, -6.0, -3.0, 0.0, 6.0, 12.0, 16.5, 21.0, 27.0])
+
+    coverage = warp_skeleton(_two_dendrites(), mapping).extra["coverage"]
+    assert np.allclose(coverage["depth"], [-8.0, 27.0])
+
+    with pytest.raises(NotImplementedError):
+        unwarp_nodes(np.zeros((1, 3)), mapping)
+    with pytest.raises(ValueError, match="depths"):
+        build_mapping(on, off, [0, 39, 0, 39], extra_surfaces={"x": (on, 1.0)})

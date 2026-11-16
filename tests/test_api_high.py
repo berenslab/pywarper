@@ -117,3 +117,54 @@ def test_warper():
 
     _assert_mapping_equal(input_skel.node2verts, output_skel.node2verts, "node2verts")
     _assert_mapping_equal(input_skel.vert2node, output_skel.vert2node, "vert2node")
+
+
+def _flat_band_warper(voxel_resolution) -> Warper:
+    """A Warper over flat bands (ON at z = 10, OFF at z = 20) holding a toy skeleton."""
+    from skeliner.dataclass import Skeleton, Soma
+
+    from pywarper.surface import build_mapping
+
+    rng = np.random.default_rng(5)
+    n = 40
+    nodes = np.column_stack(
+        [rng.uniform(5, 25, n), rng.uniform(5, 25, n), rng.uniform(2, 15, n)]
+    )
+    radii = rng.uniform(1.0, 2.0, n)
+    skel = Skeleton(
+        soma=Soma(center=nodes[0].copy(), axes=np.ones(3), R=np.eye(3), verts=None),
+        nodes=nodes,
+        radii={"median": radii, "mean": radii.copy(), "trim": radii.copy()},
+        edges=np.column_stack([np.arange(n - 1), np.arange(1, n)]),
+        ntype=np.ones(n, dtype=int),
+    )
+    on = np.full((60, 60), 10.0)
+    off = np.full((60, 60), 20.0)
+    w = Warper(voxel_resolution=voxel_resolution)
+    w.skeleton = skel
+    w.mapping = build_mapping(
+        on, off, [0, 59, 0, 59], conformal_jump=1, volume_z=(5.0, 22.0)
+    )
+    return w
+
+
+def test_renormalize_matches_warp_skeleton_units():
+    """Renormalizing to the warp's own band positions reproduces the warped skeleton,
+    whatever the voxel resolution and node scale; other positions only rescale depth."""
+    w = _flat_band_warper(voxel_resolution=[0.4, 0.4, 0.5])
+    w.warp_skeleton(skeleton_nodes_scale=2.0)
+    warped = w.warped_skeleton
+
+    same = w.renormalize(on_sac_pos=0.0, off_sac_pos=12.0)
+    assert np.allclose(same.nodes, warped.nodes)
+    assert np.allclose(same.soma.center, warped.soma.center)
+
+    unit = w.renormalize(on_sac_pos=0.0, off_sac_pos=1.0)
+    assert np.allclose(unit.nodes[:, :2], warped.nodes[:, :2])
+    assert np.allclose(unit.nodes[:, 2], warped.nodes[:, 2] / 12.0)
+
+    # faces at z = 5 and 22 around bands 10 apart, in the output's z units
+    assert np.allclose(warped.extra["coverage"]["depth"], [-6.0 / 4, 14.4 / 4])
+    assert np.allclose(
+        unit.extra["coverage"]["depth"], warped.extra["coverage"]["depth"] / 12.0
+    )

@@ -68,6 +68,11 @@ def _prepare_unwarp_inputs(
     points = np.asarray(nodes, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("nodes must be an (N, 3) array.")
+    if "extra_surfaces" in surface_mapping:
+        raise NotImplementedError(
+            "unwarping through a mapping with extra surfaces is not implemented: "
+            "their piecewise depth has no inverse here yet."
+        )
 
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
     (

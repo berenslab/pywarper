@@ -38,6 +38,7 @@ import numpy as np
 import skeliner as sk
 import trimesh
 from numpy.linalg import lstsq
+from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
@@ -220,6 +221,7 @@ def warp_nodes(
     conformal_jump: int | None = None,
     backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
+    """Warp `nodes` (surface units) into the flattened frame, before normalization."""
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
     on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off = (
         build_surface_correspondences(
@@ -233,6 +235,11 @@ def warp_nodes(
     warped = local_ls_registration(
         nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
     )
+    if "extra_surfaces" in surface_mapping:
+        rel = relative_depth(
+            nodes, surface_mapping, backward_compatible=backward_compatible
+        )
+        warped[:, 2] = med_z_on + rel * (med_z_off - med_z_on)
 
     return warped, med_z_on, med_z_off
 
@@ -281,6 +288,165 @@ def normalize_nodes(
     normalized_nodes[:, 2] = z_phys  # update the z-coordinate to the flattened space
 
     return normalized_nodes
+
+
+def relative_depth(
+    points: np.ndarray,
+    surface_mapping: dict,
+    *,
+    backward_compatible: bool = False,
+) -> np.ndarray:
+    """
+    Relative depth of points (0 at the ON band, 1 at the OFF band), per column.
+
+    Without extra surfaces in the mapping this is the fraction of the way from
+    the ON to the OFF band in the point's column, extended linearly outside
+    them. With extra surfaces (see `build_mapping`) the depth is interpolated
+    piecewise between the two layers that bracket the point and extended
+    linearly with the outermost interval; columns where the layers are not in
+    the order of their depths fall back to the two bands.
+
+    Parameters
+    ----------
+    points : np.ndarray
+        (N, 3) positions before warping, in the surfaces' units.
+    surface_mapping : dict
+        Output of `build_mapping`.
+    backward_compatible : bool, default=False
+        The surfaces' grid starts at 1 instead of 0.
+
+    Returns
+    -------
+    np.ndarray
+        (N,) relative depth.
+    """
+    points = np.asarray(points, dtype=float)
+    on = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
+    off = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
+    first = 1.0 if backward_compatible else 0.0
+    gx = np.arange(on.shape[0]) + first
+    gy = np.arange(on.shape[1]) + first
+    xy = np.column_stack(
+        [np.clip(points[:, 0], gx[0], gx[-1]), np.clip(points[:, 1], gy[0], gy[-1])]
+    )
+    z_on = RegularGridInterpolator((gx, gy), on)(xy)
+    z_off = RegularGridInterpolator((gx, gy), off)(xy)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        two_band = (points[:, 2] - z_on) / (z_off - z_on)
+    if "extra_surfaces" not in surface_mapping:
+        return two_band
+
+    depths = np.concatenate(
+        [[0.0, 1.0], np.asarray(surface_mapping["extra_surface_depths"], float)]
+    )
+    layers = [z_on, z_off] + [
+        RegularGridInterpolator((gx, gy), np.asarray(h, dtype=float))(xy)
+        for h in surface_mapping["extra_surfaces"]
+    ]
+    order = np.argsort(depths)
+    depths = depths[order]
+    z = np.column_stack(layers)[:, order]
+    # orient each column so that z grows with depth, as it does from ON to OFF
+    sign = np.sign(z_off - z_on)
+    z = z * sign[:, None]
+    p = points[:, 2] * sign
+    ordered = np.all(np.diff(z, axis=1) > 0, axis=1)
+
+    lo = np.clip((p[:, None] > z).sum(axis=1) - 1, 0, len(depths) - 2)
+    rows = np.arange(len(p))
+    z_lo, z_hi = z[rows, lo], z[rows, lo + 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        piecewise = depths[lo] + (p - z_lo) / (z_hi - z_lo) * (
+            depths[lo + 1] - depths[lo]
+        )
+    return np.where(ordered, piecewise, two_band)
+
+
+def node_coverage(
+    nodes: np.ndarray,
+    surface_mapping: dict,
+    *,
+    backward_compatible: bool = False,
+) -> dict | None:
+    """
+    Where the imaged volume and the band observations end, per node.
+
+    Parameters
+    ----------
+    nodes : np.ndarray
+        (N, 3) node positions before warping, in the surfaces' units.
+    surface_mapping : dict
+        Output of `build_mapping`. Besides the surfaces, only its ``volume_z``,
+        ``on_support`` and ``off_support`` entries are read.
+    backward_compatible : bool, default=False
+        The surfaces' grid starts at 1 instead of 0.
+
+    Returns
+    -------
+    dict or None
+        None when the mapping has none of those entries. Otherwise, each only
+        when the mapping provides what it needs:
+
+        ``depth_rel`` : (N, 2)
+            The depth range the volume covers in each node's column, lowest
+            first, in relative depth (0 at the ON band, 1 at the OFF band).
+            ±inf on a side whose face is unknown.
+        ``on_support``, ``off_support`` : (N,) bool
+            Whether that band was observed in the node's column.
+    """
+    has_faces = "volume_z" in surface_mapping
+    bands = [b for b in ("on", "off") if f"{b}_support" in surface_mapping]
+    if not has_faces and not bands:
+        return None
+
+    nodes = np.asarray(nodes, dtype=float)
+    on = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
+    first = 1.0 if backward_compatible else 0.0
+    gx = np.arange(on.shape[0]) + first
+    gy = np.arange(on.shape[1]) + first
+    xy = np.column_stack(
+        [np.clip(nodes[:, 0], gx[0], gx[-1]), np.clip(nodes[:, 1], gy[0], gy[-1])]
+    )
+
+    coverage: dict = {}
+    if has_faces:
+        off = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
+        z_on = RegularGridInterpolator((gx, gy), on)(xy)
+        z_off = RegularGridInterpolator((gx, gy), off)(xy)
+        # z grows with depth (+1) or against it (-1) in each column
+        sign = np.sign(z_off - z_on)
+        faces = np.asarray(surface_mapping["volume_z"], dtype=float)
+        rel = np.empty((len(nodes), 2))
+        for k, face in enumerate(faces):
+            if np.isnan(face):
+                # an unknown face does not bound the column on its side
+                rel[:, k] = (-np.inf if k == 0 else np.inf) * sign
+            else:
+                at_face = np.column_stack([xy, np.full(len(nodes), face)])
+                rel[:, k] = relative_depth(
+                    at_face, surface_mapping, backward_compatible=backward_compatible
+                )
+        coverage["depth_rel"] = np.sort(rel, axis=1)
+
+    ix = np.clip(np.rint(xy[:, 0] - first).astype(int), 0, on.shape[0] - 1)
+    iy = np.clip(np.rint(xy[:, 1] - first).astype(int), 0, on.shape[1] - 1)
+    for band in bands:
+        support = np.asarray(surface_mapping[f"{band}_support"], dtype=bool)
+        coverage[f"{band}_support"] = support[ix, iy]
+    return coverage
+
+
+def _covered_depth(
+    depth_rel: np.ndarray,
+    on_sac_pos: float,
+    off_sac_pos: float,
+    scale: float = 1.0,
+    z_resolution: float = 1.0,
+) -> np.ndarray:
+    """`node_coverage`'s relative depth range in the warped output's z units."""
+    with np.errstate(invalid="ignore"):
+        depth = on_sac_pos + np.asarray(depth_rel) * (off_sac_pos - on_sac_pos)
+    return np.sort(depth / scale * z_resolution, axis=1)
 
 
 def warp_skeleton(
@@ -359,6 +525,10 @@ def warp_skeleton(
        (`local_ls_registration`), referencing top (min) and bottom (max) surfaces.
     3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
        reference planes in further analyses.
+    4. When the mapping carries the volume's z-range or band support masks,
+       ``extra["coverage"]`` holds `node_coverage`'s record for every node, plus
+       ``depth``: the depth range the volume covers, in the output's z units.
+       `get_coverage` summarises it per skeleton.
     """
 
     nodes = (
@@ -436,9 +606,27 @@ def warp_skeleton(
         * voxel_resolution,  # keep the pre-normed warped nodes for future use
         "med_z_on": float(med_z_on),
         "med_z_off": float(med_z_off),
+        # what `renormalize` needs to put renormalized nodes in these same units
+        "voxel_resolution": np.broadcast_to(
+            np.asarray(voxel_resolution, dtype=float), (3,)
+        ).copy(),
+        "skeleton_nodes_scale": float(skeleton_nodes_scale),
         "z_profiles": z_profiles,
         "xy_profiles": xy_profiles,
     }
+    coverage = node_coverage(
+        nodes, surface_mapping, backward_compatible=backward_compatible
+    )
+    if coverage is not None:
+        if "depth_rel" in coverage:
+            coverage["depth"] = _covered_depth(
+                coverage["depth_rel"],
+                on_sac_pos,
+                off_sac_pos,
+                skeleton_nodes_scale,
+                skel_norm.extra["voxel_resolution"][2],
+            )
+        skel_norm.extra["coverage"] = coverage
     skel_norm.meta.update(
         {
             "pywarper_version": _PYWARPER_VERSION,
@@ -503,6 +691,15 @@ def warp_mesh(
     warped_mesh.metadata["surface_mapping"] = surface_mapping
     warped_mesh.metadata["on_sac_pos"] = on_sac_pos
     warped_mesh.metadata["off_sac_pos"] = off_sac_pos
+    coverage = node_coverage(
+        vertices, surface_mapping, backward_compatible=backward_compatible
+    )
+    if coverage is not None:
+        if "depth_rel" in coverage:
+            coverage["depth"] = _covered_depth(
+                coverage["depth_rel"], on_sac_pos, off_sac_pos, mesh_vertices_scale
+            )
+        warped_mesh.metadata["coverage"] = coverage
     warped_mesh.metadata["pywarper_meta"] = {
         "version": _PYWARPER_VERSION,
         "warped_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1088,6 +1285,8 @@ def get_z_profile(
     # window
     if extent is None:
         z_min, z_max = np.floor(z_vals.min()), np.ceil(z_vals.max())
+        # a skeleton lying exactly on one integer depth still gets one bin
+        z_max = max(z_max, z_min + bin_size)
     else:
         z_min, z_max = extent
 
@@ -1268,6 +1467,50 @@ def get_xy_profile(
     }
 
 
+def get_coverage(skel: Skeleton, extent: list[float] | tuple[float, float]) -> dict:
+    """
+    How much of a warped skeleton's cable lies where the data do not cover it.
+
+    Parameters
+    ----------
+    skel : Skeleton
+        Output of `warp_skeleton` or `Warper.renormalize`.
+    extent : (z_min, z_max)
+        Depth window in the warped skeleton's z units, e.g. its z-profile extent.
+
+    Returns
+    -------
+    dict
+        Shares of the cable length, each NaN when the skeleton has no record of it
+        (see `node_coverage`):
+
+        ``cut_below`` / ``cut_above``
+            The imaged volume ends inside the window, below z_min / above z_max,
+            in that cable's column.
+        ``on_unsupported`` / ``off_unsupported``
+            That band was not observed in the cable's column.
+    """
+    out = {
+        k: np.nan
+        for k in ("cut_below", "cut_above", "on_unsupported", "off_unsupported")
+    }
+    lengths, _ = segment_lengths(skel)
+    total = lengths.sum()
+    coverage = (skel.extra or {}).get("coverage") or {}
+    if total <= 0:
+        return out
+    z_min, z_max = extent
+    if "depth" in coverage:
+        depth = np.asarray(coverage["depth"], dtype=float)
+        out["cut_below"] = float(lengths[depth[:, 0] > z_min].sum() / total)
+        out["cut_above"] = float(lengths[depth[:, 1] < z_max].sum() / total)
+    for band in ("on", "off"):
+        if f"{band}_support" in coverage:
+            support = np.asarray(coverage[f"{band}_support"], dtype=bool)
+            out[f"{band}_unsupported"] = float(lengths[~support].sum() / total)
+    return out
+
+
 def hdr(z_centres, z_density, mass=0.95):
     """
     High Density Region (HDR) estimator.
@@ -1280,11 +1523,16 @@ def hdr(z_centres, z_density, mass=0.95):
 
     Example
     -------
-    >>> hdr_multimodal(z, d, 0.95)
+    >>> hdr(z, d, 0.95)
     [array([ -2.1,  1.7]),   # ON sheet
      array([ 10.3, 13.9])]   # OFF sheet
+
+    A profile without mass has no high-density region: the result is empty.
     """
-    p = z_density / z_density.sum()  # normalise -> probability
+    total = z_density.sum()
+    if not total > 0:
+        return []
+    p = z_density / total  # normalise -> probability
     order = np.argsort(p)[::-1]  # bins from high to low density
 
     selected = []
@@ -1478,8 +1726,17 @@ class Warper:
         conformal_jump: int = 2,
         n_anchors: int = 16,
         backward_compatible: bool = False,
+        *,
+        volume_z: tuple[float | None, float | None] | None = None,
+        on_support: np.ndarray | None = None,
+        off_support: np.ndarray | None = None,
     ) -> "Warper":
-        """Create the quasi-conformal surface mapping."""
+        """Create the quasi-conformal surface mapping.
+
+        `volume_z`, `on_support` and `off_support` are passed on to
+        :func:`pywarper.surface.build_mapping`; warped skeletons then record
+        their coverage.
+        """
         if self.off_sac_surface is None or self.on_sac_surface is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
 
@@ -1515,6 +1772,9 @@ class Warper:
             bounds,
             conformal_jump=conformal_jump,
             n_anchors=n_anchors,
+            volume_z=volume_z,
+            on_support=on_support,
+            off_support=off_support,
             backward_compatible=backward_compatible,
             verbose=self.verbose,
         )
@@ -1591,20 +1851,37 @@ class Warper:
         xy_profile_voxel_size: float | None = None,
         radius_metric: str | None = None,
     ) -> Skeleton:
-        """Renormalize the warped skeleton to the desired ON/OFF SAC positions."""
+        """Renormalize the warped skeleton to the desired ON/OFF SAC positions.
+
+        The result is in the same units as the output of `warp_skeleton`: the
+        voxel resolution and node scale that the warp recorded are undone before
+        renormalizing and applied again after. Skeletons warped before those were
+        recorded fall back to this Warper's `voxel_resolution` and a scale of 1.
+        """
         if self.warped_skeleton is None:
             raise RuntimeError("Warped skeleton missing. Call warp_skeleton() first.")
-        else:
-            renormed_nodes = normalize_nodes(
-                self.warped_skeleton.extra["prenormed_nodes"],
-                med_z_on=self.warped_skeleton.extra["med_z_on"],
-                med_z_off=self.warped_skeleton.extra["med_z_off"],
+        extra = self.warped_skeleton.extra
+        voxel_resolution = np.broadcast_to(
+            np.asarray(
+                extra.get("voxel_resolution", self.voxel_resolution), dtype=float
+            ),
+            (3,),
+        )
+        scale = float(extra.get("skeleton_nodes_scale", 1.0))
+        renormed_nodes = (
+            normalize_nodes(
+                np.asarray(extra["prenormed_nodes"], dtype=float) / voxel_resolution,
+                med_z_on=extra["med_z_on"],
+                med_z_off=extra["med_z_off"],
                 on_sac_pos=on_sac_pos,
                 off_sac_pos=off_sac_pos,
             )
+            / scale
+            * voxel_resolution
+        )
 
         soma_renormed = deepcopy(self.warped_skeleton.soma)
-        soma_renormed.center = renormed_nodes[0] * self.voxel_resolution
+        soma_renormed.center = renormed_nodes[0]
 
         skel_renormed = Skeleton(
             soma=soma_renormed,
@@ -1673,9 +1950,22 @@ class Warper:
             ],  # keep the pre-normed warped nodes for future use
             "med_z_on": float(self.warped_skeleton.extra["med_z_on"]),
             "med_z_off": float(self.warped_skeleton.extra["med_z_off"]),
+            "voxel_resolution": voxel_resolution.copy(),
+            "skeleton_nodes_scale": scale,
             "z_profiles": z_profiles,
             "xy_profiles": xy_profiles,
         }
+        if "coverage" in extra:
+            coverage = dict(extra["coverage"])
+            if "depth_rel" in coverage:
+                coverage["depth"] = _covered_depth(
+                    coverage["depth_rel"],
+                    on_sac_pos,
+                    off_sac_pos,
+                    scale,
+                    voxel_resolution[2],
+                )
+            skel_renormed.extra["coverage"] = coverage
         skel_renormed.meta.update(
             {
                 "pywarper_version": _PYWARPER_VERSION,
