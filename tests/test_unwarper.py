@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from skeliner.dataclass import Skeleton, Soma
+from skeliner import Skeleton, Soma
 
 from pywarper.unwarper import denormalize_nodes, unwarp_nodes, unwarp_skeleton
 from pywarper.warpers import normalize_nodes, warp_nodes, warp_skeleton
@@ -215,7 +215,9 @@ def test_unwarp_nodes_supports_custom_sac_positions():
     assert np.allclose(recovered_opt, nodes, rtol=1e-6, atol=1e-6)
 
 
-def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
+def test_unwarp_nodes_is_exact_on_a_nontrivial_mapping():
+    """The inverse brings back nodes far beyond the bands as well, under either
+    name of the method, and what it returns warps onto its input again."""
     rng = np.random.default_rng(42)
     mapping = _nontrivial_surface_mapping()
 
@@ -226,6 +228,7 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
     nodes[:, 2] = rng.uniform(-120.0, 180.0, size=80)
 
     warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    assert np.abs(warped - nodes)[:, :2].max() > 1.0
     normalized = normalize_nodes(
         warped,
         med_z_on=med_z_on,
@@ -234,34 +237,35 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
         off_sac_pos=12.0,
     )
 
-    recovered_local = unwarp_nodes(
-        normalized,
-        mapping,
+    recovered = unwarp_nodes(normalized, mapping)
+    assert np.abs(recovered - nodes).max() < 1e-9
+    assert np.array_equal(
+        recovered,
+        unwarp_nodes(
+            normalized,
+            mapping,
+            method="optimize",
+            max_evals_per_point=80,
+            convergence_tol=1e-9,
+            bound_xy_to_map=True,
+        ),
     )
-    recovered_opt = unwarp_nodes(
-        normalized,
-        mapping,
-        method="optimize",
-        max_evals_per_point=80,
-        convergence_tol=1e-9,
-        bound_xy_to_map=True,
-    )
+    with pytest.raises(ValueError, match="method"):
+        unwarp_nodes(normalized, mapping, method="exact")
 
-    local_err = np.linalg.norm(recovered_local - nodes, axis=1)
-    opt_err = np.linalg.norm(recovered_opt - nodes, axis=1)
-
-    assert opt_err.mean() < local_err.mean() * 1e-3
-    assert np.quantile(opt_err, 0.95) < 1e-6
-
-    rewarped_opt, _, _ = warp_nodes(recovered_opt, mapping)
-    renorm_opt = normalize_nodes(
-        rewarped_opt,
+    rewarped, _, _ = warp_nodes(recovered, mapping)
+    renormalized = normalize_nodes(
+        rewarped,
         med_z_on=med_z_on,
         med_z_off=med_z_off,
         on_sac_pos=0.0,
         off_sac_pos=12.0,
     )
-    assert np.allclose(renorm_opt, normalized, rtol=1e-8, atol=1e-8)
+    assert np.allclose(renormalized, normalized, rtol=1e-8, atol=1e-8)
+
+    # one step is not enough, and the answer says so by being off
+    rough = unwarp_nodes(normalized, mapping, max_evals_per_point=1)
+    assert np.abs(rough - nodes).max() > 1e-6
 
 
 def test_unwarp_nodes_inverts_a_warp_through_extra_surfaces():
@@ -288,10 +292,33 @@ def test_unwarp_nodes_inverts_a_warp_through_extra_surfaces():
     warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
     normalized = normalize_nodes(warped, med_z_on=med_z_on, med_z_off=med_z_off)
 
-    local = np.abs(unwarp_nodes(normalized, mapping) - nodes)
-    assert local[:, :2].max() < 0.02 and local[:, 2].max() < 0.01
-    refined = unwarp_nodes(normalized, mapping, method="optimize")
-    assert np.abs(refined - nodes).max() < 1e-6
+    # the outer layers bend the depth away from the two bands' own
+    two_band = {k: v for k, v in mapping.items() if not k.startswith("extra_")}
+    assert np.abs(unwarp_nodes(normalized, two_band) - nodes)[:, 2].max() > 0.5
+
+    recovered = unwarp_nodes(normalized, mapping)
+    assert np.abs(recovered - nodes).max() < 1e-8
+    again, _, _ = warp_nodes(recovered, mapping)
+    assert np.abs(again - warped).max() < 1e-8
+
+
+def test_unwarp_nodes_bounds_xy_to_the_map():
+    """A flattened point whose origin lies beyond the map comes back on the
+    map's border, or, unbound, where it is: the warp leaves such points alone."""
+    mapping = _nontrivial_surface_mapping()  # 35 x 35 vertices, bands at 0 and 10
+    beyond = np.array([[80.0, 17.0, 6.0], [17.0, -40.0, 6.0], [17.0, 17.0, 6.0]])
+
+    free = unwarp_nodes(beyond, mapping, bound_xy_to_map=False)
+    assert np.allclose(free[:2], [[80.0, 17.0, 5.0], [17.0, -40.0, 5.0]])
+    warped, med_z_on, med_z_off = warp_nodes(
+        free,
+        mapping,
+    )
+    assert np.allclose(normalize_nodes(warped, med_z_on, med_z_off), beyond)
+
+    bound = unwarp_nodes(beyond, mapping)
+    assert np.allclose(bound[:2], [[34.0, 17.0, 5.0], [17.0, 0.0, 5.0]])
+    assert np.array_equal(bound[2], free[2])
 
 
 def test_unwarp_nodes_optimize_invalid_params_raise():

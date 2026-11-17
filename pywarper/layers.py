@@ -291,21 +291,71 @@ def _lattice(bounds: tuple, spacing: float) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _column_stats(
-    xyz: np.ndarray, xg: np.ndarray, yg: np.ndarray, radius: float
+    xyz: np.ndarray, xg: np.ndarray, yg: np.ndarray, spacing: float
 ) -> dict[str, np.ndarray]:
-    """Median, 10th and 90th percentile of z and the node count per column."""
+    """Median, 10th and 90th percentile of z and the node count per column: the
+    nodes within `spacing` of each point of the lattice `xg` x `yg`, which lies
+    on multiples of `spacing`."""
     shape = (len(xg), len(yg))
-    xx, yy = np.meshgrid(xg, yg, indexing="ij")
-    xy = np.column_stack([xx.ravel(), yy.ravel()])
-    quantiles = np.full((len(xy), 3), np.nan)
-    count = np.zeros(len(xy), dtype=int)
+    n_columns = shape[0] * shape[1]
+    quantiles = np.full((n_columns, 3), np.nan)
+    count = np.zeros(n_columns, dtype=int)
     if len(xyz):
-        z = xyz[:, 2]
-        hits = KDTree(xyz[:, :2]).query_ball_point(xy, r=radius, workers=-1)
-        for i, members in enumerate(hits):
-            if members:
-                quantiles[i] = np.percentile(z[members], [50, 10, 90])
-                count[i] = len(members)
+        # nodes by rising z, so that a sort of (column, node) pairs sorts each
+        # column's members by z
+        order = np.argsort(xyz[:, 2])
+        x, y, z = xyz[order, 0], xyz[order, 1], xyz[order, 2]
+        # the lattice cell of each node: i * spacing <= x < (i + 1) * spacing
+        cell = []
+        for coordinate in (x, y):
+            index = np.floor(coordinate / spacing).astype(np.int64)
+            index -= coordinate < index * spacing
+            index += coordinate >= (index + 1) * spacing
+            cell.append(index)
+        on_line = [x == cell[0] * spacing, y == cell[1] * spacing]
+        # a node reaches the corners of its cell and, from a lattice line, the
+        # lattice points one step behind that line
+        bits = int(len(z)).bit_length()
+        pairs = []
+        for a in (-1, 0, 1):
+            for b in (-1, 0, 1):
+                if a < 0 and b < 0:
+                    continue
+                who = None
+                if a < 0 or b < 0:
+                    who = np.flatnonzero(on_line[0] if a < 0 else on_line[1])
+                    if not who.size:
+                        continue
+                i = (cell[0] if who is None else cell[0][who]) + a
+                j = (cell[1] if who is None else cell[1][who]) + b
+                dx = (x if who is None else x[who]) - i * spacing
+                dy = (y if who is None else y[who]) - j * spacing
+                member = (
+                    (i >= 0)
+                    & (i < shape[0])
+                    & (j >= 0)
+                    & (j < shape[1])
+                    & (dx * dx + dy * dy <= spacing * spacing)
+                )
+                node = np.flatnonzero(member) if who is None else who[member]
+                pairs.append(((i[member] * shape[1] + j[member]) << bits) | node)
+        pairs = np.sort(np.concatenate(pairs))
+        column = pairs >> bits
+        values = z[pairs & ((1 << bits) - 1)]
+        count = np.bincount(column, minlength=n_columns)
+        held = np.flatnonzero(count)
+        n, first = count[held], (np.cumsum(count) - count)[held]
+        # the percentiles as numpy interpolates them between order statistics
+        for k, q in enumerate((0.5, 0.1, 0.9)):
+            position = (n - 1) * q
+            below = np.floor(position).astype(np.int64)
+            above = np.minimum(below + 1, n - 1)
+            weight = position - below
+            low, high = values[first + below], values[first + above]
+            step = high - low
+            quantiles[held, k] = np.where(
+                weight >= 0.5, high - step * (1 - weight), low + step * weight
+            )
     return {
         "median": quantiles[:, 0].reshape(shape),
         "low": quantiles[:, 1].reshape(shape),

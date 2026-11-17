@@ -1,7 +1,8 @@
 import numpy as np
 import pytest
 import skeliner as sk
-from skeliner.dataclass import Skeleton, Soma
+from scipy.spatial import KDTree
+from skeliner import Skeleton, Soma
 
 from pywarper import layers
 from pywarper.layers import _column_stats, _lattice, _observed
@@ -47,6 +48,27 @@ def cells_on(height, n_nodes, seed, *, top=None, n_cells=40) -> layers.Cells:
 
 def rms(values):
     return float(np.sqrt(np.mean(np.square(values))))
+
+
+def column_stats_by_search(xyz, xg, yg, radius):
+    """The statistics of every column from a search for its nodes: what the
+    statistics computed for all columns at once have to equal."""
+    shape = (len(xg), len(yg))
+    xx, yy = np.meshgrid(xg, yg, indexing="ij")
+    centres = np.column_stack([xx.ravel(), yy.ravel()])
+    quantiles = np.full((len(centres), 3), np.nan)
+    count = np.zeros(len(centres), dtype=int)
+    hits = KDTree(xyz[:, :2]).query_ball_point(centres, r=radius, workers=-1)
+    for i, members in enumerate(hits):
+        if members:
+            quantiles[i] = np.percentile(xyz[members, 2], [50, 10, 90])
+            count[i] = len(members)
+    return {
+        "median": quantiles[:, 0].reshape(shape),
+        "low": quantiles[:, 1].reshape(shape),
+        "high": quantiles[:, 2].reshape(shape),
+        "count": count.reshape(shape),
+    }
 
 
 @pytest.fixture(scope="module")
@@ -101,6 +123,38 @@ def test_columns_left_under_a_face_do_not_count(cut):
     hidden = (R > 97) & (R < 106)
     assert whole.off.observed[hidden].all()
     assert abs((bands.off.height - whole.off.height)[hidden].mean()) < 0.3
+
+
+def test_column_statistics_equal_a_search_per_column():
+    """Every column's count and percentiles are those of the nodes within the
+    spacing of it: for nodes anywhere, on lattice lines, on lattice points and
+    beyond the lattice, in columns of one node and of none."""
+    spacing = 5.0
+    xg, yg = _lattice((0.0, 60.0, 0.0, 45.0), spacing)
+    rng = np.random.default_rng(7)
+    anywhere = np.column_stack([rng.uniform(-8, 68, 6000), rng.uniform(-8, 53, 6000)])
+    on_lines = np.column_stack(
+        [spacing * rng.integers(0, 13, 300), rng.uniform(0, 45, 300)]
+    )
+    on_points = spacing * np.column_stack(
+        [rng.integers(0, 13, 200), rng.integers(0, 10, 200)]
+    )
+    xy = np.vstack([anywhere, on_lines, on_lines[:, ::-1] * [1.0, 0.7], on_points])
+    # a strip without nodes, but for one
+    xy = np.vstack([xy[(xy[:, 0] < 22) | (xy[:, 0] > 43)], [[32.6, 21.0]]])
+    xyz = np.column_stack([xy, rng.normal(30.0, 4.0, len(xy))])
+
+    stats = _column_stats(xyz, xg, yg, spacing)
+    expected = column_stats_by_search(xyz, xg, yg, spacing)
+    assert np.array_equal(stats["count"], expected["count"])
+    for name in ("median", "low", "high"):
+        assert np.array_equal(stats[name], expected[name], equal_nan=True)
+    assert (stats["count"] == 0).sum() > 5 and (stats["count"] == 1).sum() >= 1
+    # a node on a lattice point is in the four columns one step from it too
+    assert stats["count"].sum() > len(xyz) * 2
+
+    empty = _column_stats(xyz[:0], xg, yg, spacing)
+    assert not empty["count"].any() and np.isnan(empty["median"]).all()
 
 
 def test_bands_refuse_cells_filed_twice_and_bands_that_cross(cut):

@@ -1,5 +1,8 @@
+import warnings
+
 import numpy as np
 import scipy.io
+import skeliner as sk
 
 from pywarper import Warper
 from pywarper.utils import read_sumbul_et_al_chat_bands
@@ -121,7 +124,7 @@ def test_warper():
 
 def _flat_band_warper(voxel_resolution) -> Warper:
     """A Warper over flat bands (ON at z = 10, OFF at z = 20) holding a toy skeleton."""
-    from skeliner.dataclass import Skeleton, Soma
+    from skeliner import Skeleton, Soma
 
     from pywarper.surface import build_mapping
 
@@ -178,3 +181,24 @@ def test_renormalize_matches_warp_skeleton_units():
         assert not np.allclose(
             xy["volume"]["distribution"].sum(), xy["length"]["distribution"].sum()
         )
+
+
+def test_saved_warped_skeleton_loads_and_renormalizes(tmp_path):
+    """A warped skeleton saved by skeliner loads back through names skeliner
+    supports, and renormalizing it reproduces the warp."""
+    w = _flat_band_warper(voxel_resolution=[0.4, 0.4, 0.5])
+    w.warp_skeleton(skeleton_nodes_scale=2.0)
+    sk.io.save_skeleton(w.warped_skeleton, tmp_path / "warped.npz")
+
+    fresh = Warper(voxel_resolution=[0.4, 0.4, 0.5])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        fresh.load_warped_skeleton(str(tmp_path / "warped.npz"))
+
+    assert np.allclose(fresh.warped_skeleton.nodes, w.warped_skeleton.nodes)
+    again = fresh.renormalize(on_sac_pos=0.0, off_sac_pos=12.0)
+    assert np.allclose(again.nodes, w.warped_skeleton.nodes)
+    assert np.allclose(
+        again.extra["z_profiles"]["volume"]["distribution"],
+        w.warped_skeleton.extra["z_profiles"]["volume"]["distribution"],
+    )

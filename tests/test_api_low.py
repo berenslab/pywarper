@@ -2,10 +2,62 @@ import numpy as np
 import pytest
 import scipy.io
 import skeliner as sk
+from scipy.spatial import KDTree
 
-from pywarper.surface import build_mapping, fit_sac_surface, map_distortion
-from pywarper.utils import read_sumbul_et_al_chat_bands
-from pywarper.warpers import get_coverage, warp_skeleton
+from pywarper.surface import (
+    CholeskySolver,
+    build_mapping,
+    conformal_map_indep_fixed_diagonals,
+    fit_sac_surface,
+    map_distortion,
+)
+from pywarper.utils import build_surface_correspondences, read_sumbul_et_al_chat_bands
+from pywarper.warpers import (
+    get_coverage,
+    get_xy_profile,
+    get_z_profile,
+    poly_basis_2d,
+    warp_nodes,
+    warp_skeleton,
+)
+
+
+def register_node_by_node(
+    nodes, top_in, bot_in, top_out, bot_out, window=5.0, max_order=2
+):
+    """The local least-squares registration fitted afresh around every node:
+    what the registration by lattice block has to reproduce."""
+    points_in = np.vstack((top_in, bot_in))
+    points_out = np.vstack((top_out, bot_out))
+    tree = KDTree(points_in[:, :2])
+    low, high = points_in[:, :2].min(axis=0), points_in[:, :2].max(axis=0)
+    moved = np.array(nodes, dtype=float)
+    for k, (x, y, z) in enumerate(np.asarray(nodes, dtype=float)):
+        near = np.array(tree.query_ball_point([x, y], r=window * np.sqrt(2.0)), int)
+        if near.size:
+            dx, dy = points_in[near, 0] - x, points_in[near, 1] - y
+            near = near[(np.abs(dx) <= window) & (np.abs(dy) <= window)]
+        if near.size < 12:
+            continue
+        # beyond the points, a fit that cannot tell the polynomial's terms
+        # apart would be extrapolated
+        beyond = np.any([x, y] < low) or np.any([x, y] > high)
+        sides = [len(np.unique(points_in[near, axis])) for axis in (0, 1)]
+        if beyond and min(sides) <= max_order:
+            continue
+        shift = points_in[near, :2].mean(axis=0)
+        base = poly_basis_2d(
+            points_in[near, 0] - shift[0], points_in[near, 1] - shift[1], max_order
+        )
+        design = np.hstack((base, base * points_in[near, 2:3]))
+        target = np.column_stack((points_out[near, :2] - shift, points_out[near, 2]))
+        transform = np.linalg.lstsq(design, target, rcond=None)[0]
+        at_node = poly_basis_2d(
+            np.array([x - shift[0]]), np.array([y - shift[1]]), max_order
+        ).ravel()
+        moved[k] = np.concatenate((at_node, z * at_node)) @ transform
+        moved[k, :2] += shift
+    return moved
 
 
 def test_skeleton():
@@ -85,6 +137,15 @@ def test_skeleton():
     assert np.allclose(warped_nodes, warped_nodes_mat, rtol=1e-5, atol=1e-8), (
         "Warped nodes do not match expected values."
     )
+
+    # and they are what a fit around every single node gives
+    by_node = register_node_by_node(
+        skel.nodes,
+        *build_surface_correspondences(
+            surface_mapping, conformal_jump=2, backward_compatible=True
+        )[:4],
+    )
+    assert np.abs(warped_nodes / voxel_resolution - by_node).max() < 1e-9
     assert np.isclose(
         warped_skeleton.extra["med_z_on"], warped_skeleton_mat["warpedArbor"].medVZmin
     ), "Minimum VZ does not match expected value."
@@ -159,7 +220,7 @@ def test_skeleton():
 
 def _two_dendrites() -> sk.Skeleton:
     """Two straight dendrites at mid-depth, x = 10 and x = 30, joined at y = 30."""
-    from skeliner.dataclass import Skeleton, Soma
+    from skeliner import Skeleton, Soma
 
     a = np.column_stack([np.full(21, 10.0), np.arange(10.0, 31.0), np.full(21, 15.0)])
     b = np.column_stack(
@@ -340,3 +401,211 @@ def test_coverage_names_the_extra_layers_that_were_not_observed():
         build_mapping(
             on, off, [0, 39, 0, 39], extra_surfaces={"deep": (on - 6, -0.5, seen[:-1])}
         )
+
+
+def test_warp_mesh_takes_trimesh_and_skeliner_meshes():
+    """A mesh's vertices warp as nodes do, whichever kind of mesh holds them;
+    the faces stay and the metadata records the warp."""
+    import trimesh
+
+    from pywarper.warpers import normalize_nodes, warp_mesh, warp_nodes
+
+    n = 40
+    x, y = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+    on = 10.0 + 2.0 * np.sin(x / 9.0)
+    off = on + 10.0 + np.cos(y / 11.0)
+    mapping = build_mapping(
+        on, off, [0, n - 1, 0, n - 1], conformal_jump=1, volume_z=(2.0, 30.0)
+    )
+    rng = np.random.default_rng(3)
+    verts = np.column_stack(
+        [rng.uniform(8, 30, 30), rng.uniform(8, 30, 30), rng.uniform(5, 25, 30)]
+    )
+    faces = np.arange(30).reshape(10, 3)
+    expected, med_z_on, med_z_off = warp_nodes(verts, mapping)
+    expected = normalize_nodes(expected, med_z_on=med_z_on, med_z_off=med_z_off)
+
+    scale = 1e-3  # the mesh in nm, the map in um
+    meshes = {
+        "trimesh": trimesh.Trimesh(verts / scale, faces, process=False),
+        "skeliner": sk.Mesh(verts / scale, faces),
+    }
+    meshes["trimesh"].metadata["source"] = "somewhere"
+    for kind, mesh in meshes.items():
+        warped = warp_mesh(mesh, mapping, mesh_vertices_scale=scale)
+        assert isinstance(warped, trimesh.Trimesh)
+        assert np.allclose(warped.vertices * scale, expected, atol=1e-9), kind
+        assert np.array_equal(warped.faces, faces), kind
+        assert warped.metadata["med_z_on"] == med_z_on
+        assert warped.metadata["coverage"]["depth"].shape == (30, 2)
+    assert (
+        warp_mesh(meshes["trimesh"], mapping, mesh_vertices_scale=scale).metadata[
+            "source"
+        ]
+        == "somewhere"
+    )
+
+
+def test_volume_profiles_partition_skeliners_volume():
+    """The z layers and the xy bins of the volume profiles add up to the volume
+    skeliner measures, and a fixed window holds what skeliner finds in its box."""
+    skel = _two_dendrites()
+    total = sk.dx.volume(skel, include_soma=False)
+    # three straight runs of 20 at radius 1, less their overlaps
+    assert 0.9 * np.pi * 60 < total < 1.1 * np.pi * 60
+
+    z = get_z_profile(skel, measure="volume")
+    assert np.isclose(z["histogram"].sum(), total, rtol=1e-12)
+    assert z["extent"] == [14.0, 16.0]
+
+    xy = get_xy_profile(skel, bin_size=5.0, measure="volume")
+    assert np.isclose(xy["histogram"].sum(), total, rtol=1e-12)
+    assert np.isclose(xy["distribution"].sum(), total, rtol=1e-12)
+    assert xy["extents"] == pytest.approx([5.0, 35.0, 5.0, 35.0])
+    # between the dendrites only the run that joins them, at y = 30
+    between = (xy["x"] > 15) & (xy["x"] < 25)
+    assert not xy["histogram"][between][:, xy["y"] < 25].any()
+    assert xy["histogram"][between][:, xy["y"] > 25].all()
+
+    window = [5.0, 15.0, 5.0, 35.0]
+    part = get_xy_profile(skel, extents=window, bin_size=5.0, measure="volume")
+    in_box = sk.dx.volume(skel, bbox=[*window, 13.0, 17.0], include_soma=False)
+    assert np.isclose(part["histogram"].sum(), in_box, rtol=0.02)
+    assert 0.3 * total < in_box < 0.6 * total
+
+    # one bin over a morphology whose grid skeliner has to coarsen
+    thin = _two_dendrites()
+    for radii in thin.radii.values():
+        radii[:] = 0.05
+    one_bin = get_xy_profile(thin, bin_size=1000.0, measure="volume")
+    assert one_bin["histogram"].shape == (1, 1)
+    assert np.isclose(
+        one_bin["histogram"].sum(), sk.dx.volume(thin, include_soma=False), rtol=1e-12
+    )
+
+
+def test_profiles_of_nothing_are_zero():
+    """A window that holds none of the cell, and a skeleton without radii, give
+    profiles of zeros."""
+    skel = _two_dendrites()
+    for measure in ("length", "volume"):
+        away = get_xy_profile(
+            skel, extents=[100, 140, 100, 140], bin_size=20, measure=measure
+        )
+        assert np.array_equal(away["distribution"], np.zeros((2, 2)))
+
+    for radii in skel.radii.values():
+        radii[:] = 0.0
+    z = get_z_profile(skel, measure="volume")
+    assert not z["distribution"].any() and z["hdr"] == []
+    xy = get_xy_profile(skel, bin_size=20, measure="volume")
+    assert not xy["distribution"].any()
+    assert np.isfinite(
+        warp_skeleton(
+            skel,
+            build_mapping(
+                np.full((40, 40), 10.0),
+                np.full((40, 40), 20.0),
+                [0, 39, 0, 39],
+                conformal_jump=1,
+            ),
+        ).nodes
+    ).all()
+
+
+def _bowl_mapping(jump: int, n: int = 60) -> dict:
+    """Two curved bands over an n x n grid, the OFF band's gap varying."""
+    x, y = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+    on = 20.0 + 6.0 * ((x - 30) ** 2 + (y - 30) ** 2) / 900.0
+    off = on + 12.0 + 1.5 * np.sin(x / 15.0)
+    return build_mapping(on, off, [0, n - 1, 0, n - 1], conformal_jump=jump)
+
+
+@pytest.mark.parametrize("jump", [1, 2, 3])
+@pytest.mark.parametrize("backward_compatible", [False, True])
+def test_registration_by_block_equals_node_by_node(jump, backward_compatible, capsys):
+    """Nodes that share a block of the map's lattice share one fit, and every
+    node lands where a fit of its own would put it: inside the map, on lattice
+    lines, along the border, and left alone beyond it."""
+    mapping = _bowl_mapping(jump)
+    rng = np.random.default_rng(jump)
+    inside = np.column_stack(
+        [rng.uniform(6, 53, 400), rng.uniform(6, 53, 400), rng.uniform(5, 60, 400)]
+    )
+    on_lines = np.column_stack(
+        [rng.integers(6, 53, 100), rng.integers(6, 53, 100), rng.uniform(5, 60, 100)]
+    ).astype(float)
+    border = np.column_stack(
+        [rng.uniform(-9, 69, 600), rng.uniform(-9, 69, 600), rng.uniform(5, 60, 600)]
+    )
+    border = border[
+        (np.abs(border[:, 0] - 29.5) > 24.5) | (np.abs(border[:, 1] - 29.5) > 24.5)
+    ]
+    nodes = np.vstack([inside, on_lines, border, [[200.0, 200.0, 30.0]]])
+    if backward_compatible:
+        nodes[:, :2] += 1.0
+
+    reference = register_node_by_node(
+        nodes,
+        *build_surface_correspondences(
+            mapping, conformal_jump=jump, backward_compatible=backward_compatible
+        )[:4],
+    )
+    warped, med_z_on, med_z_off = warp_nodes(
+        nodes, mapping, backward_compatible=backward_compatible
+    )
+    said = capsys.readouterr().out
+
+    left_alone = np.all(reference == nodes, axis=1)
+    assert 5 < left_alone.sum() < len(border)
+    assert np.array_equal(warped[left_alone], nodes[left_alone])
+    assert np.abs(warped - reference).max() < 1e-9
+    # the fits move the nodes, and none is thrown far: not beyond the border,
+    # where the lattice ends inside a node's window, either
+    moved = np.linalg.norm((reference - nodes)[~left_alone, :2], axis=1)
+    assert 0.3 < moved.max() < 5.0
+    lattice = np.arange(0, 60, jump) + backward_compatible
+    # how far inside the lattice a node is; negative beyond it
+    depth = np.minimum(nodes[:, :2] - lattice[0], lattice[-1] - nodes[:, :2]).min(
+        axis=1
+    )
+    if jump < 3:
+        # just beyond the border a window still holds enough rows and columns
+        assert ((depth < 0) & ~left_alone).sum() > 20
+    else:
+        # at this spacing it holds two: no fit beyond the border, and inside it
+        # the fit of the last two rows or columns
+        assert left_alone[depth < 0].all()
+        assert ((depth >= 0) & (depth < 1) & ~left_alone).sum() > 5
+    assert med_z_on < med_z_off
+
+    assert said.count("no neighbours") + said.count("not enough neighbours") == (
+        left_alone.sum()
+    )
+    last = len(nodes) - 1
+    assert f"no neighbours for node {last} at (" in said
+
+
+def test_two_bands_share_one_analysis_of_their_system():
+    """Two surfaces on one grid, mapped with one solver, are analyzed once and
+    come out as they do with a solver each; another grid is analyzed anew."""
+    n = 40
+    idx = np.arange(n)
+    x, y = np.meshgrid(idx, idx, indexing="ij")
+    on = 10.0 + 2.0 * np.sin(x / 9.0)
+    off = on + 10.0 + np.cos(y / 11.0)
+
+    def mapped(surface, solver=None, grid=idx):
+        return conformal_map_indep_fixed_diagonals(
+            60.0, 60.0, grid, grid, surface[np.ix_(grid, grid)], solver=solver
+        )
+
+    shared = CholeskySolver()
+    together = [mapped(on, shared), mapped(off, shared)]
+    assert shared.analyses == 1
+    assert np.array_equal(together[0], mapped(on))
+    assert np.array_equal(together[1], mapped(off))
+    assert not np.allclose(together[0], together[1])
+
+    mapped(on, shared, grid=idx[::2])
+    assert shared.analyses == 2

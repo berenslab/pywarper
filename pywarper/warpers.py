@@ -7,9 +7,9 @@ This module takes a neuronal tree (nodes+edges) and the previously-computed
 ON/OFF Starburst Amacrine Cell (SAC) surface mapping in order to
 
 1. **Warp the skeleton into the flattened SAC coordinate frame** (`warp_nodes`).
-   Each node is locally re-registered with a polynomial least-squares fit
-   (`local_ls_registration`) that references both SAC layers so that depth is
-   preserved relative to the curved retina.
+   Each node is locally re-registered with a polynomial least-squares fit that
+   references both SAC layers so that depth is preserved relative to the
+   curved retina.
 2. **Compute depth (z) profiles** (`get_z_profile`).  Edge lengths are first binned
    directly (histogram) and then re-estimated with a Kaiser–Bessel gridding
    kernel to obtain a smooth 1-D density across the inner plexiform layer.
@@ -19,11 +19,11 @@ ON/OFF Starburst Amacrine Cell (SAC) surface mapping in order to
 
 Key algorithms
 --------------
-* **Polynomial local registration** – For every node we fit a 2-D polynomial
-  basis (up to a configurable `max_order`) to the positions of neighbouring
-  SAC-band sample points, solving three separate least-squares systems in one
-  go with `numpy.linalg.lstsq`.  A single **KDTree** (SciPy) accelerates the
-  neighbourhood queries.
+* **Polynomial local registration** – Around every node a 2-D polynomial
+  basis (up to a configurable `max_order`) is fitted to the positions of the
+  neighbouring SAC-band sample points, three least-squares systems at once.
+  The sample points lie on a regular lattice, so nodes whose neighbourhood is
+  the same block of it share one fit.
 * **Kaiser–Bessel gridding** – The 1-D `gridder1d` function emulates the
   non-uniform FFT gridding scheme used by older MATLAB code, yielding the exact
   same numerical output but in fully vectorised NumPy.
@@ -42,14 +42,18 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
+from skeliner import Skeleton
 from skeliner._core import _bfs_parents
-from skeliner.dataclass import Skeleton
-from skeliner.dx import _choose_voxel_size, _ellipsoid_aabb
 
 from .surface import build_mapping, fit_sac_surface
-from .utils import build_surface_correspondences, resolve_conformal_jump
+from .utils import resolve_conformal_jump, surface_lattice
 
 _PYWARPER_VERSION = _metadata.version("pywarper")
+
+# points handled at a time by the registration
+_CHUNK = 100_000
+# step of the finite difference that reads a layer's tilt, in surface units
+_NUDGE = 1e-3
 
 
 def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
@@ -71,148 +75,323 @@ def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
     return np.stack(cols, axis=1)  # (N, n_terms)
 
 
-def _build_local_ls_state(
-    top_input_pos: np.ndarray,
-    bot_input_pos: np.ndarray,
-    top_output_pos: np.ndarray,
-    bot_output_pos: np.ndarray,
-    *,
-    window: float,
-    max_order: int,
-) -> dict[str, np.ndarray | KDTree | float | int]:
-    in_all = np.vstack((top_input_pos, bot_input_pos))
-    out_all = np.vstack((top_output_pos, bot_output_pos))
-    is_top = np.concatenate(
-        (
-            np.ones(len(top_input_pos), dtype=bool),
-            np.zeros(len(bot_input_pos), dtype=bool),
-        )
-    )
-    all_xy = in_all[:, :2]
-    query_r = window * np.sqrt(2.0)
-    tree = KDTree(all_xy)
-    return {
-        "in_all": in_all,
-        "out_all": out_all,
-        "is_top": is_top,
-        "all_xy": all_xy,
-        "query_r": query_r,
-        "tree": tree,
-        "window": float(window),
-        "max_order": int(max_order),
-    }
+def _poly_gradient_2d(
+    x: np.ndarray, y: np.ndarray, max_order: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Derivatives of `poly_basis_2d`'s terms along x and along y, in its layout."""
+    zero, one = np.zeros_like(x), np.ones_like(x)
+    along_x, along_y = [zero, one, zero], [zero, zero, one]
+    for order in range(2, max_order + 1):
+        for ox in range(order + 1):
+            oy = order - ox
+            along_x.append(ox * x ** (ox - 1) * y**oy if ox else zero)
+            along_y.append(oy * x**ox * y ** (oy - 1) if oy else zero)
+    return np.stack(along_x, axis=1), np.stack(along_y, axis=1)
 
 
-def _apply_local_ls_state(
-    nodes: np.ndarray,
-    state: dict[str, np.ndarray | KDTree | float | int],
-    *,
-    warn: bool = True,
-) -> np.ndarray:
-    transformed_nodes = np.zeros_like(nodes)
-
-    in_all = state["in_all"]
-    out_all = state["out_all"]
-    is_top = state["is_top"]
-    all_xy = state["all_xy"]
-    query_r = state["query_r"]
-    tree = state["tree"]
-    window = state["window"]
-    max_order = state["max_order"]
-
-    workers = -1 if nodes.shape[0] >= 512 else 1
-    idx_lists = tree.query_ball_point(nodes[:, :2], r=query_r, workers=workers)
-
-    for k, (x, y, z) in enumerate(nodes):
-        idx = np.array(idx_lists[k], dtype=int)
-
-        lx, ux = x - window, x + window
-        ly, uy = y - window, y + window
-        mask_rect = (
-            (all_xy[idx, 0] >= lx)
-            & (all_xy[idx, 0] <= ux)
-            & (all_xy[idx, 1] >= ly)
-            & (all_xy[idx, 1] <= uy)
-        )
-
-        idx = idx[mask_rect]
-        if idx.size == 0:
-            if warn:
-                print(
-                    f"[pywarper] Warning: no neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})"
-                )
-            transformed_nodes[k] = nodes[k]
-            continue
-
-        idx_top = idx[is_top[idx]]
-        idx_bot = idx[~is_top[idx]]
-
-        in_top, out_top = in_all[idx_top], out_all[idx_top]
-        in_bot, out_bot = in_all[idx_bot], out_all[idx_bot]
-
-        this_in = np.vstack((in_top, in_bot))
-        this_out = np.vstack((out_top, out_bot))
-
-        if this_in.shape[0] < 12:
-            if warn:
-                print(
-                    f"[pywarper] Warning: not enough neighbours for node {k} at ({x:.2f}, {y:.2f}, {z:.2f})"
-                )
-            transformed_nodes[k] = nodes[k]
-            continue
-
-        shift_xy = this_in[:, :2].mean(axis=0)
-        xin, yin, zin = (
-            this_in[:, 0] - shift_xy[0],
-            this_in[:, 1] - shift_xy[1],
-            this_in[:, 2],
-        )
-
-        xout, yout, zout = (
-            this_out[:, 0] - shift_xy[0],
-            this_out[:, 1] - shift_xy[1],
-            this_out[:, 2],
-        )
-
-        base_terms = poly_basis_2d(xin, yin, max_order)
-        X = np.hstack((base_terms, base_terms * zin[:, None]))
-
-        T, _, _, _ = lstsq(X, np.column_stack((xout, yout, zout)), rcond=None)
-
-        nx, ny = nodes[k, 0] - shift_xy[0], nodes[k, 1] - shift_xy[1]
-        basis_eval = poly_basis_2d(np.array([nx]), np.array([ny]), max_order).ravel()
-        vec = np.concatenate((basis_eval, z * basis_eval))
-        new_pos = vec @ T
-
-        new_pos[:2] += shift_xy
-        transformed_nodes[k] = new_pos
-
-    return transformed_nodes
-
-
-def local_ls_registration(
-    nodes: np.ndarray,
-    top_input_pos: np.ndarray,
-    bot_input_pos: np.ndarray,
-    top_output_pos: np.ndarray,
-    bot_output_pos: np.ndarray,
-    window: float = 5.0,
-    max_order: int = 2,
-    warn: bool = True,
-) -> np.ndarray:
+class _LocalWarp:
     """
-    Same algorithm as before, but a **single KDTree** stores both
-    surfaces.  The neighbour search is therefore performed once.
+    The local least-squares registration of a surface mapping, and its inverse.
+
+    A point is moved by a polynomial in (x, y) up to `max_order`, linear in z,
+    fitted to the map's vertices of both bands that lie within `window` of the
+    point in x and in y: from where the vertices are to where the mapping
+    flattened them. The vertices form one regular lattice, so every point whose
+    window covers the same block of it has the same fit; a block is fitted once,
+    when a point first needs it.
+
+    A point is left where it is when its window holds fewer than 12 vertices,
+    or when it lies beyond the lattice and its block has too few rows or
+    columns to determine the polynomial, which the fit would then extrapolate.
     """
-    state = _build_local_ls_state(
-        top_input_pos,
-        bot_input_pos,
-        top_output_pos,
-        bot_output_pos,
-        window=window,
-        max_order=max_order,
-    )
-    return _apply_local_ls_state(nodes, state, warn=warn)
+
+    def __init__(
+        self,
+        surface_mapping: dict,
+        conformal_jump: int | None = None,
+        backward_compatible: bool = False,
+        *,
+        window: float = 5.0,
+        max_order: int = 2,
+    ):
+        xs, ys, z_on, z_off, flat_on, flat_off, self.med_z_on, self.med_z_off = (
+            surface_lattice(
+                surface_mapping,
+                conformal_jump=resolve_conformal_jump(surface_mapping, conformal_jump),
+                backward_compatible=backward_compatible,
+            )
+        )
+        self.xs, self.ys = xs.astype(float), ys.astype(float)
+        shape = (len(xs), len(ys))
+        # per band and lattice vertex: height, flattened x and y
+        self.heights = np.stack([z_on, z_off])
+        self.flat = np.stack(
+            [
+                flat.reshape((shape[1], shape[0], 2)).transpose(1, 0, 2)
+                for flat in (flat_on, flat_off)
+            ]
+        )
+        self.window, self.max_order = float(window), int(max_order)
+        self.n_terms = (self.max_order + 1) * (self.max_order + 2) // 2
+        self._rows: dict[int, int] = {}
+        self._transforms = np.zeros((0, 2 * self.n_terms, 3))
+        self._shifts = np.zeros((0, 2))
+        self._fitted = np.zeros(0, dtype=bool)
+        self._coarse = None
+
+    # ------------------------------------------------------------- the fits
+    def _spans(self, points: np.ndarray) -> np.ndarray:
+        """Per point, the lattice block inside its window: rows [i0, i1) and
+        columns [j0, j1)."""
+        lo, hi = points[:, :2] - self.window, points[:, :2] + self.window
+        return np.column_stack(
+            [
+                np.searchsorted(self.xs, lo[:, 0], side="left"),
+                np.searchsorted(self.xs, hi[:, 0], side="right"),
+                np.searchsorted(self.ys, lo[:, 1], side="left"),
+                np.searchsorted(self.ys, hi[:, 1], side="right"),
+            ]
+        )
+
+    def _blocks(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Per point, where its block's fit is stored (fitting the blocks that
+        are new), and the block itself."""
+        spans = self._spans(points)
+        nx, ny = len(self.xs) + 1, len(self.ys) + 1
+        keys = ((spans[:, 0] * nx + spans[:, 1]) * ny + spans[:, 2]) * ny + spans[:, 3]
+        unique, first, inverse = np.unique(keys, return_index=True, return_inverse=True)
+        rows = np.array([self._rows.get(key, -1) for key in unique.tolist()], dtype=int)
+        new = np.flatnonzero(rows < 0)
+        if new.size:
+            rows[new] = self._fit(spans[first[new]])
+            self._rows.update(zip(unique[new].tolist(), rows[new].tolist()))
+        return rows[inverse], spans
+
+    def _fit(self, spans: np.ndarray) -> np.ndarray:
+        """Fit the blocks `spans` (C, 4); returns where their fits are stored."""
+        n = len(spans)
+        transforms = np.zeros((n, 2 * self.n_terms, 3))
+        shifts = np.zeros((n, 2))
+        fitted = np.zeros(n, dtype=bool)
+        shape = spans[:, [1, 3]] - spans[:, [0, 2]]
+        for ni, nj in np.unique(shape, axis=0):
+            if 2 * ni * nj < 12:
+                continue
+            same = np.flatnonzero((shape[:, 0] == ni) & (shape[:, 1] == nj))
+            for part in np.array_split(same, len(same) // 2000 + 1):
+                transforms[part], shifts[part] = self._fit_alike(spans[part], ni, nj)
+            fitted[same] = True
+        start = len(self._fitted)
+        self._transforms = np.concatenate([self._transforms, transforms])
+        self._shifts = np.concatenate([self._shifts, shifts])
+        self._fitted = np.concatenate([self._fitted, fitted])
+        return np.arange(start, start + n)
+
+    def _fit_alike(
+        self, spans: np.ndarray, ni: int, nj: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Transforms (C, 2 * n_terms, 3) and xy shifts (C, 2) of blocks that
+        all hold `ni` rows and `nj` columns of the lattice."""
+        n = len(spans)
+        ii = (spans[:, 0, None] + np.arange(ni))[:, :, None]
+        jj = (spans[:, 2, None] + np.arange(nj))[:, None, :]
+        both = (n, 2 * ni * nj)
+        # the block's vertices, the ON band's then the OFF band's
+        x = np.broadcast_to(self.xs[ii], (2, n, ni, nj)).transpose(1, 0, 2, 3)
+        y = np.broadcast_to(self.ys[jj], (2, n, ni, nj)).transpose(1, 0, 2, 3)
+        x, y = x.reshape(both), y.reshape(both)
+        z = self.heights[:, ii, jj].transpose(1, 0, 2, 3).reshape(both)
+        flat = self.flat[:, ii, jj].transpose(1, 0, 2, 3, 4).reshape(both + (2,))
+        flat_z = np.repeat([self.med_z_on, self.med_z_off], ni * nj)
+
+        shift = np.column_stack([x.mean(axis=1), y.mean(axis=1)])
+        base = poly_basis_2d(
+            (x - shift[:, :1]).ravel(), (y - shift[:, 1:]).ravel(), self.max_order
+        ).reshape(both + (self.n_terms,))
+        design = np.concatenate([base, base * z[:, :, None]], axis=2)
+        target = np.concatenate(
+            [
+                flat - shift[:, None, :],
+                np.broadcast_to(flat_z[None, :, None], both + (1,)),
+            ],
+            axis=2,
+        )
+        if min(ni, nj) > self.max_order:
+            cutoff = max(design.shape[1:]) * np.finfo(float).eps
+            return np.linalg.pinv(design, rtol=cutoff) @ target, shift
+        # too few rows or columns for the polynomial: the smallest solution
+        transforms = np.stack(
+            [lstsq(design[c], target[c], rcond=None)[0] for c in range(n)]
+        )
+        return transforms, shift
+
+    # ------------------------------------------------------- forward, inverse
+    def _evaluate(self, points: np.ndarray, jacobian: bool = False):
+        """Warped `points`, which of them had a fit, their blocks and, on
+        request, the derivative of the warp at each point (N, 3, 3)."""
+        rows, spans = self._blocks(points)
+        transforms, shift = self._transforms[rows], self._shifts[rows]
+        thin = (
+            np.minimum(spans[:, 1] - spans[:, 0], spans[:, 3] - spans[:, 2])
+            <= self.max_order
+        )
+        beyond = (
+            (points[:, 0] < self.xs[0])
+            | (points[:, 0] > self.xs[-1])
+            | (points[:, 1] < self.ys[0])
+            | (points[:, 1] > self.ys[-1])
+        )
+        fitted = self._fitted[rows] & ~(thin & beyond)
+        x, y, z = points[:, 0] - shift[:, 0], points[:, 1] - shift[:, 1], points[:, 2]
+        base = poly_basis_2d(x, y, self.max_order)
+
+        def moved(terms: np.ndarray, with_z: np.ndarray) -> np.ndarray:
+            return np.einsum(
+                "nk,nkd->nd", np.concatenate([terms, with_z], axis=1), transforms
+            )
+
+        warped = moved(base, base * z[:, None])
+        warped[:, :2] += shift
+        warped[~fitted] = points[~fitted]
+        if not jacobian:
+            return warped, fitted, spans
+        along_x, along_y = _poly_gradient_2d(x, y, self.max_order)
+        slope = np.stack(
+            [
+                moved(along_x, along_x * z[:, None]),
+                moved(along_y, along_y * z[:, None]),
+                moved(np.zeros_like(base), base),
+            ],
+            axis=2,
+        )
+        slope[~fitted] = np.eye(3)
+        return warped, fitted, spans, slope
+
+    def warp(self, points: np.ndarray, *, warn: bool = True) -> np.ndarray:
+        """`points` (N, 3) in the frame the mapping flattens to, before their
+        depth is normalized."""
+        points = np.asarray(points, dtype=float)
+        warped = np.empty_like(points)
+        for start in range(0, len(points), _CHUNK):
+            part = points[start : start + _CHUNK]
+            warped[start : start + _CHUNK], fitted, spans = self._evaluate(part)
+            if not warn:
+                continue
+            for k in np.flatnonzero(~fitted):
+                vertices = (spans[k, 1] - spans[k, 0]) * (spans[k, 3] - spans[k, 2])
+                what = "not enough neighbours" if vertices else "no neighbours"
+                x, y, z = part[k]
+                print(
+                    f"[pywarper] Warning: {what} for node {start + k} "
+                    f"at ({x:.2f}, {y:.2f}, {z:.2f})"
+                )
+        return warped
+
+    def unwarp(
+        self,
+        targets: np.ndarray,
+        *,
+        layers: "_DepthModel | None" = None,
+        max_steps: int = 80,
+        tolerance: float = 1e-9,
+        bound: bool = True,
+    ) -> np.ndarray:
+        """
+        The points that `warp` takes to `targets` (N, 3), by Newton steps.
+
+        With `layers`, depth is the mapping's piecewise one: z then follows from
+        the layers in each point's column and the steps are taken in x and y.
+        A point stops when a step is shorter than `tolerance`; one that has not
+        stopped after `max_steps` gets the position that came closest. With
+        `bound`, x and y of the result are brought back inside the lattice.
+        """
+        targets = np.asarray(targets, dtype=float)
+        points = np.empty_like(targets)
+        for start in range(0, len(targets), _CHUNK):
+            part = slice(start, start + _CHUNK)
+            points[part] = self._unwarp(
+                targets[part], layers, int(max_steps), float(tolerance), bound
+            )
+        return points
+
+    def _nearby(self, targets: np.ndarray, depth: np.ndarray) -> np.ndarray:
+        """A point near each target's preimage: the lattice vertex that is
+        flattened nearest to it, among a sparse set of them."""
+        if self._coarse is None:
+            spacing = self.xs[1] - self.xs[0] if len(self.xs) > 1 else 1.0
+            every = max(1, int(round(2.0 * self.window / spacing)))
+            ii, jj = np.meshgrid(
+                np.arange(0, len(self.xs), every),
+                np.arange(0, len(self.ys), every),
+                indexing="ij",
+            )
+            ii, jj = ii.ravel(), jj.ravel()
+            self._coarse = (KDTree(self.flat[:, ii, jj].mean(axis=0)), ii, jj)
+        tree, ii, jj = self._coarse
+        nearest = tree.query(targets[:, :2])[1]
+        i, j = ii[nearest], jj[nearest]
+        z_on, z_off = self.heights[0, i, j], self.heights[1, i, j]
+        return np.column_stack([self.xs[i], self.ys[j], z_on + depth * (z_off - z_on)])
+
+    def _unwarp(self, targets, layers, max_steps, tolerance, bound) -> np.ndarray:
+        depth = (targets[:, 2] - self.med_z_on) / (self.med_z_off - self.med_z_on)
+        points = self._nearby(targets, depth)
+        low = np.array([self.xs[0], self.ys[0]])
+        high = np.array([self.xs[-1], self.ys[-1]])
+
+        def miss_and_step(p: np.ndarray, which: np.ndarray):
+            """How far `p` warps from its target, and the Newton step from it."""
+            if layers is None:
+                warped, _, _, slope = self._evaluate(p, jacobian=True)
+                miss = warped - targets[which]
+                return miss, _solve(slope, miss)
+            p[:, 2] = layers.height(p[:, :2], depth[which])
+            warped, _, _, slope = self._evaluate(p, jacobian=True)
+            miss = warped[:, :2] - targets[which, :2]
+            # z moves with x and y along the surface of this depth
+            tilt = np.empty((len(p), 2))
+            for axis in (0, 1):
+                ahead, behind = p[:, :2].copy(), p[:, :2].copy()
+                ahead[:, axis] += _NUDGE
+                behind[:, axis] -= _NUDGE
+                tilt[:, axis] = (
+                    layers.height(ahead, depth[which])
+                    - layers.height(behind, depth[which])
+                ) / (2.0 * _NUDGE)
+            along = slope[:, :2, :2] + slope[:, :2, 2:] * tilt[:, None, :]
+            step = np.zeros_like(p)
+            step[:, :2] = _solve(along, miss)
+            return miss, step
+
+        closest = points.copy()
+        closest_miss = np.full(len(points), np.inf)
+        moving = np.arange(len(points))
+        for _ in range(max_steps + 1):
+            p = points[moving]
+            miss, step = miss_and_step(p, moving)
+            size = np.linalg.norm(miss, axis=1)
+            closer = size < closest_miss[moving]
+            closest[moving[closer]] = p[closer]
+            closest_miss[moving[closer]] = size[closer]
+            points[moving] = p - step
+            moving = moving[np.abs(step).max(axis=1) >= tolerance]
+            if not moving.size:
+                break
+        # a point that never settled is on a border between two fits
+        points[moving] = closest[moving]
+        if bound:
+            np.clip(points[:, :2], low, high, out=points[:, :2])
+        if layers is not None:
+            points[:, 2] = layers.height(points[:, :2], depth)
+        return points
+
+
+def _solve(matrices: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Solve each small system of a stack; least squares where one is singular."""
+    try:
+        return np.linalg.solve(matrices, right[:, :, None])[:, :, 0]
+    except np.linalg.LinAlgError:
+        return (np.linalg.pinv(matrices) @ right[:, :, None])[:, :, 0]
 
 
 def warp_nodes(
@@ -222,19 +401,9 @@ def warp_nodes(
     backward_compatible: bool = False,
 ) -> tuple[np.ndarray, float, float]:
     """Warp `nodes` (surface units) into the flattened frame, before normalization."""
-    resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
-    on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off = (
-        build_surface_correspondences(
-            surface_mapping,
-            conformal_jump=resolved_jump,
-            backward_compatible=backward_compatible,
-        )
-    )
-
-    # Apply local least-squares registration to each node
-    warped = local_ls_registration(
-        nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
-    )
+    registration = _LocalWarp(surface_mapping, conformal_jump, backward_compatible)
+    med_z_on, med_z_off = registration.med_z_on, registration.med_z_off
+    warped = registration.warp(nodes)
     if "extra_surfaces" in surface_mapping:
         rel = relative_depth(
             nodes, surface_mapping, backward_compatible=backward_compatible
@@ -631,8 +800,8 @@ def warp_skeleton(
     -----
     1. The function extracts a subregion of the surfaces according to thisx/thisy and
        conformal_jump, matching the flattening step used in the mapping.
-    2. Each node in `nodes` is then warped via local least-squares registration
-       (`local_ls_registration`), referencing top (min) and bottom (max) surfaces.
+    2. Each node in `nodes` is then warped via local least-squares registration,
+       referencing top (min) and bottom (max) surfaces.
     3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
        reference planes in further analyses.
     4. When the mapping carries the volume's z-range or band support masks,
@@ -748,7 +917,7 @@ def warp_skeleton(
 
 
 def warp_mesh(
-    mesh: trimesh.Trimesh,  # mostly nm
+    mesh: "trimesh.Trimesh | sk.Mesh",  # mostly nm
     surface_mapping: dict,  # mostly µm
     conformal_jump: int | None = None,
     on_sac_pos: float = 0.0,  # µm
@@ -760,10 +929,14 @@ def warp_mesh(
     """
     Applies a local surface flattening (warp) to a 3D mesh using the results
     of previously computed surface mappings.
+
+    `mesh` is a trimesh mesh or a skeliner one (what `sk.io.load_mesh` returns).
+    The result is a trimesh mesh with the same faces; its ``metadata`` holds the
+    input's, when it has any, and the record of the warp.
     """
 
     vertices = (
-        mesh.vertices.astype(float) * mesh_vertices_scale
+        np.asarray(mesh.vertices, dtype=float) * mesh_vertices_scale
     )  # scale to the surface unit, which is often µm
 
     if verbose:
@@ -794,7 +967,7 @@ def warp_mesh(
         faces=mesh.faces,
         process=False,  # no processing
     )
-    warped_mesh.metadata = mesh.metadata.copy()  # copy metadata
+    warped_mesh.metadata = dict(getattr(mesh, "metadata", None) or {})
     warped_mesh.metadata["med_z_on"] = float(med_z_on)
     warped_mesh.metadata["med_z_off"] = float(med_z_off)
     warped_mesh.metadata["conformal_jump"] = conformal_jump
@@ -851,151 +1024,57 @@ def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
     return lengths, mid
 
 
-def _voxelize_union(
-    skel,
-    radii: np.ndarray,
-    lo: np.ndarray,
-    hi: np.ndarray,
+def _volume_grid(
+    skel: Skeleton,
     *,
     voxel_size: float | None,
     include_soma: bool,
-):
+    radius_metric: str | None,
+) -> tuple[dict, dict]:
     """
-    Boolean occupancy grid for the union of edge frusta and (optionally) soma,
-    inside [lo, hi].  Returns (occ, h, (nx,ny,nz), lo, hi).
+    skeliner's voxel grid over the whole morphology, and the arguments that
+    give the same union of edges and soma on a box of that grid.
+
+    The grid is `sk.dx.volume`'s record of one call: ``voxel_size``,
+    ``bbox_lo``, ``grid_shape`` and ``filled_voxels``.
     """
-    h, (nx, ny, nz) = _choose_voxel_size(radii, lo, hi, user_voxel=voxel_size)
-    xs = lo[0] + (np.arange(nx) + 0.5) * h
-    ys = lo[1] + (np.arange(ny) + 0.5) * h
-    zs = lo[2] + (np.arange(nz) + 0.5) * h
-
-    occ = np.zeros((nx, ny, nz), dtype=bool)
-    nodes = skel.nodes.astype(np.float64, copy=False)
-    edges = skel.edges.astype(np.int64, copy=False)
-
-    # ---------------- helpers ----------------
-    def _range_x(x0, x1):
-        i0 = int(max(0, np.floor((x0 - lo[0]) / h)))
-        i1 = int(min(nx - 1, np.floor((x1 - lo[0]) / h)))
-        return i0, i1
-
-    def _range_y(y0, y1):
-        j0 = int(max(0, np.floor((y0 - lo[1]) / h)))
-        j1 = int(min(ny - 1, np.floor((y1 - lo[1]) / h)))
-        return j0, j1
-
-    def _range_z(z0, z1):
-        k0 = int(max(0, np.floor((z0 - lo[2]) / h)))
-        k1 = int(min(nz - 1, np.floor((z1 - lo[2]) / h)))
-        return k0, k1
-
-    # --------- precompute soma mask once (if there is a soma) ------------
-    soma_slice = None
-    soma_mask = None
-    if getattr(skel, "soma", None) is not None:
-        slo, shi = _ellipsoid_aabb(skel.soma)
-        # clip to global bbox
-        slo = np.maximum(slo, lo)
-        shi = np.minimum(shi, hi)
-        i0, i1 = _range_x(slo[0], shi[0])
-        j0, j1 = _range_y(slo[1], shi[1])
-        k0, k1 = _range_z(slo[2], shi[2])
-
-        if (i1 >= i0) and (j1 >= j0) and (k1 >= k0):
-            # broadcasted coordinate slabs (no big meshgrid; uses ogrid)
-            xi = xs[i0 : i1 + 1][:, None, None]
-            yj = ys[j0 : j1 + 1][None, :, None]
-            zk = zs[k0 : k1 + 1][None, None, :]
-
-            cx, cy, cz = skel.soma.center
-            Rt = skel.soma.R.T  # 3x3
-            ax, ay, az = skel.soma.axes
-            ax2, ay2, az2 = ax * ax, ay * ay, az * az
-
-            dx = xi - cx
-            dy = yj - cy
-            dz = zk - cz
-
-            # rotate into soma body-frame: u = R^T (x - c)
-            ux = Rt[0, 0] * dx + Rt[0, 1] * dy + Rt[0, 2] * dz
-            uy = Rt[1, 0] * dx + Rt[1, 1] * dy + Rt[1, 2] * dz
-            uz = Rt[2, 0] * dx + Rt[2, 1] * dy + Rt[2, 2] * dz
-
-            soma_mask = (ux * ux) / ax2 + (uy * uy) / ay2 + (uz * uz) / az2 <= 1.0
-            soma_slice = (slice(i0, i1 + 1), slice(j0, j1 + 1), slice(k0, k1 + 1))
-
-    # If soma is to be included, OR it now.
-    if include_soma and soma_mask is not None:
-        occ[soma_slice] |= soma_mask
-
-    # ---------------- rasterize every edge (broadcasted) -----------------
-    for i, j in edges:
-        a = nodes[i]
-        b = nodes[j]
-        r0 = float(radii[i])
-        r1 = float(radii[j])
-
-        rmax = max(r0, r1)
-        if not np.isfinite(rmax) or rmax < 0.0:
-            continue
-
-        # edge AABB padded by rmax, clipped to [lo,hi]
-        lo_e = np.maximum(np.minimum(a, b) - rmax, lo)
-        hi_e = np.minimum(np.maximum(a, b) + rmax, hi)
-        if np.any(lo_e > hi_e):
-            continue
-
-        ii0, ii1 = _range_x(lo_e[0], hi_e[0])
-        jj0, jj1 = _range_y(lo_e[1], hi_e[1])
-        kk0, kk1 = _range_z(lo_e[2], hi_e[2])
-        if (ii1 < ii0) or (jj1 < jj0) or (kk1 < kk0):
-            continue
-
-        xi = xs[ii0 : ii1 + 1][:, None, None]
-        yj = ys[jj0 : jj1 + 1][None, :, None]
-        zk = zs[kk0 : kk1 + 1][None, None, :]
-
-        v = b - a
-        L2 = float(v @ v)
-        if L2 <= 1e-24:
-            # degenerate: paint a ball of radius rmax at 'a'
-            dx = xi - a[0]
-            dy = yj - a[1]
-            dz = zk - a[2]
-            d2 = dx * dx + dy * dy + dz * dz
-            mask = d2 <= (rmax * rmax)
-            occ[ii0 : ii1 + 1, jj0 : jj1 + 1, kk0 : kk1 + 1] |= mask
-            continue
-
-        vx, vy, vz = v
-        # projection parameter s (broadcasted), then clamp to [0,1]
-        dx = xi - a[0]
-        dy = yj - a[1]
-        dz = zk - a[2]
-        s = (dx * vx + dy * vy + dz * vz) / L2
-        # clip in-place to save a temporary
-        np.clip(s, 0.0, 1.0, out=s)
-
-        # distance from voxel center to closest point on segment
-        rx = dx - s * vx
-        ry = dy - s * vy
-        rz = dz - s * vz
-        d2 = rx * rx + ry * ry + rz * rz
-
-        # linear radius along the frustum
-        r = r0 + s * (r1 - r0)
-        mask = d2 <= (r * r)
-
-        occ[ii0 : ii1 + 1, jj0 : jj1 + 1, kk0 : kk1 + 1] |= mask
-
-    # If soma is to be excluded, carve it out once (reuses precomputed mask).
-    if (not include_soma) and (soma_mask is not None):
-        occ[soma_slice] &= ~soma_mask
-
-    return occ, float(h), (int(nx), int(ny), int(nz)), lo, hi
+    union = {
+        "radius_metric": radius_metric or skel.recommend_radius()[0],
+        "include_soma": include_soma,
+    }
+    _, grid = sk.dx.volume(skel, voxel_size=voxel_size, return_details=True, **union)
+    return grid, union
 
 
-def z_slince_volumes(
+def _filled_voxels(skel: Skeleton, grid: dict, union: dict, start, count) -> int:
+    """Filled voxels in the block of `grid` that starts at voxel `start` and
+    holds `count` voxels along each axis."""
+    start, count = np.asarray(start), np.asarray(count)
+    h = grid["voxel_size"]
+    lo = np.asarray(grid["bbox_lo"], dtype=float) + start * h
+    # the box ends inside its last voxels, past their centres, so that
+    # rounding cannot give it one voxel more
+    hi = lo + (count - 0.25) * h
+    _, block = sk.dx.volume(
+        skel, bbox=(lo, hi), voxel_size=h, return_details=True, **union
+    )
+    if block["voxel_size"] == h and tuple(block["grid_shape"]) == tuple(count):
+        return int(block["filled_voxels"])
+    # skeliner coarsens a box that holds more voxels than it takes in one grid
+    axis = int(np.argmax(count))
+    if count[axis] < 2:
+        raise RuntimeError("skeliner did not voxelize a box on the grid it was given.")
+    near, far = count.copy(), count.copy()
+    near[axis] = count[axis] // 2
+    far[axis] = count[axis] - near[axis]
+    beyond = start.copy()
+    beyond[axis] += near[axis]
+    return _filled_voxels(skel, grid, union, start, near) + _filled_voxels(
+        skel, grid, union, beyond, far
+    )
+
+
+def z_slice_volumes(
     skel: Skeleton,
     *,
     voxel_size: float | None = None,
@@ -1003,128 +1082,108 @@ def z_slince_volumes(
     radius_metric: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Union-correct **per-z slice** volumes as weights + sample positions.
+    Union volume of the morphology in each layer of voxels along z.
 
     Returns
     -------
     volumes : (K,) float
-        Union volume per *non-empty* z-slice (in unit³).
-    mid     : (K, 3) float
-        Sample positions for each slice: (x_bar, y_bar, z_center), where x_bar,y_bar are
-        slice area-weighted centroids and z_center is the slice center.
+        Volume in each layer that holds any (in unit³).
+    z : (K,) float
+        The layers' centres.
     """
-    # choose radii column for voxelizer / bbox
-    if radius_metric is None:
-        radius_metric = skel.recommend_radius()[0]
-    radii = np.asarray(skel.radii[radius_metric], dtype=np.float64).reshape(-1)
-
-    # tight auto-bbox (like dx.volume/area)
-    lo_nodes = (skel.nodes - radii[:, None]).min(axis=0)
-    hi_nodes = (skel.nodes + radii[:, None]).max(axis=0)
-    if include_soma and getattr(skel, "soma", None) is not None:
-        slo, shi = _ellipsoid_aabb(skel.soma)
-        lo = np.minimum(lo_nodes, slo)
-        hi = np.maximum(hi_nodes, shi)
-    else:
-        lo, hi = lo_nodes, hi_nodes
-
-    # one voxelization of the union
-    occ, h, (nx, ny, nz), lo, hi = _voxelize_union(
-        skel, radii, lo, hi, voxel_size=voxel_size, include_soma=include_soma
+    grid, union = _volume_grid(
+        skel,
+        voxel_size=voxel_size,
+        include_soma=include_soma,
+        radius_metric=radius_metric,
     )
-    if nz == 0:
-        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
-
-    # volume per slice (occupied count × voxel volume)
-    vol_all = occ.sum(axis=(0, 1)).astype(np.float64) * (h**3)  # (nz,)
-
-    # keep only non-empty slices
-    mask = vol_all > 0.0
-    if not mask.any():
-        return np.zeros(0, dtype=float), np.zeros((0, 3), dtype=float)
-    vol = vol_all[mask]
-    k = np.where(mask)[0]  # slice indices kept
-
-    # z center for each kept slice
-    zc = lo[2] + (k + 0.5) * h
-
-    # area-weighted centroids per kept slice (optional but nice to have)
-    xs = lo[0] + (np.arange(nx) + 0.5) * h  # (nx,)
-    ys = lo[1] + (np.arange(ny) + 0.5) * h  # (ny,)
-    occ_sel = occ[:, :, mask]  # (nx, ny, K)
-
-    counts = occ_sel.sum(axis=(0, 1)).astype(np.float64)  # (K,)
-    sum_x = (occ_sel * xs[:, None, None]).sum(axis=(0, 1))  # (K,)
-    sum_y = (occ_sel * ys[None, :, None]).sum(axis=(0, 1))  # (K,)
-
-    with np.errstate(invalid="ignore", divide="ignore"):
-        xbar = np.where(counts > 0, sum_x / counts, (lo[0] + hi[0]) / 2.0)
-        ybar = np.where(counts > 0, sum_y / counts, (lo[1] + hi[1]) / 2.0)
-
-    mid = np.column_stack((xbar, ybar, zc)).astype(np.float64)
-    return vol, mid
+    h = grid["voxel_size"]
+    nx, ny, nz = grid["grid_shape"]
+    filled = np.array(
+        [_filled_voxels(skel, grid, union, (0, 0, k), (nx, ny, 1)) for k in range(nz)]
+    )
+    z = grid["bbox_lo"][2] + (np.arange(nz) + 0.5) * h
+    keep = filled > 0
+    return filled[keep].astype(np.float64) * (h**3), z[keep]
 
 
-def xy_column_volume(
+def _xy_bin_volumes(
+    skel: Skeleton, grid: dict, union: dict, x_edges: np.ndarray, y_edges: np.ndarray
+) -> np.ndarray:
+    """Union volume in each bin of an xy histogram: a column of voxels belongs
+    to the bin `np.histogram2d` would put its centre in."""
+    h = grid["voxel_size"]
+    nz = grid["grid_shape"][2]
+    spans = []
+    for axis, edges in enumerate((x_edges, y_edges)):
+        centres = (
+            grid["bbox_lo"][axis] + (np.arange(grid["grid_shape"][axis]) + 0.5) * h
+        )
+        first = np.searchsorted(centres, edges[:-1], side="left")
+        last = np.append(first[1:], np.searchsorted(centres, edges[-1], side="right"))
+        spans.append((first, np.maximum(last, first)))
+    (x0, x1), (y0, y1) = spans
+    filled = np.zeros((len(x0), len(y0)))
+    for i in np.flatnonzero(x1 > x0):
+        for j in np.flatnonzero(y1 > y0):
+            filled[i, j] = _filled_voxels(
+                skel,
+                grid,
+                union,
+                (x0[i], y0[j], 0),
+                (x1[i] - x0[i], y1[j] - y0[j], nz),
+            )
+    return filled * (h**3)
+
+
+def _xy_volume_histogram(
     skel: Skeleton,
+    extents: list[float | int] | None,
+    bin_size: float,
     *,
-    voxel_size: float | None = None,
-    include_soma: bool = False,
-    radius_metric: str | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    Union-correct **per-(x,y) column** volumes + sample positions.
-
-    Returns
-    -------
-    vol : (K,) float
-        Volume in each non-empty (x,y) column (integrated over z), unit³.
-    mid : (K,3) float
-        (x_center, y_center, z_bar) for that column, where z_bar is the z-centroid
-        of occupied voxels in the column (handy but not used by XY maps).
-    """
-    if radius_metric is None:
-        radius_metric = skel.recommend_radius()[0]
-    radii = np.asarray(skel.radii[radius_metric], dtype=np.float64).reshape(-1)
-
-    lo_nodes = (skel.nodes - radii[:, None]).min(axis=0)
-    hi_nodes = (skel.nodes + radii[:, None]).max(axis=0)
-    if include_soma and getattr(skel, "soma", None) is not None:
-        slo, shi = _ellipsoid_aabb(skel.soma)
-        lo = np.minimum(lo_nodes, slo)
-        hi = np.maximum(hi_nodes, shi)
-    else:
-        lo, hi = lo_nodes, hi_nodes
-
-    occ, h, (nx, ny, nz), lo, hi = _voxelize_union(
-        skel, radii, lo, hi, voxel_size=voxel_size, include_soma=include_soma
+    voxel_size: float | None,
+    include_soma: bool,
+    radius_metric: str | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """Union volume per xy bin, the bins' edges along x and y, and the volume
+    of the whole morphology. Without `extents` the window is the whole bins
+    around the nodes and the filled voxel columns."""
+    grid, union = _volume_grid(
+        skel,
+        voxel_size=voxel_size,
+        include_soma=include_soma,
+        radius_metric=radius_metric,
     )
-    if nx == 0 or ny == 0:
-        return np.zeros(0), np.zeros((0, 3))
+    h = grid["voxel_size"]
+    total = float(grid["filled_voxels"]) * (h**3)
 
-    # volume per (x,y) column
-    vol_xy = occ.sum(axis=2).astype(np.float64) * (h**3)  # (nx, ny)
-    mask = vol_xy > 0.0
-    if not mask.any():
-        return np.zeros(0), np.zeros((0, 3))
+    def histogram(lo, hi):
+        x_edges = _edges_from_bin_size(lo[0], hi[0], bin_size)
+        y_edges = _edges_from_bin_size(lo[1], hi[1], bin_size)
+        return _xy_bin_volumes(skel, grid, union, x_edges, y_edges), x_edges, y_edges
 
-    # centers
-    xs = lo[0] + (np.arange(nx) + 0.5) * h
-    ys = lo[1] + (np.arange(ny) + 0.5) * h
-    Xc, Yc = np.meshgrid(xs, ys, indexing="ij")
+    if extents is not None:
+        xmin, xmax, ymin, ymax = extents
+        return *histogram((xmin, ymin), (xmax, ymax)), total
 
-    # z centroid per column (nice to have)
-    zc = lo[2] + (np.arange(nz) + 0.5) * h  # (nz,)
-    occ_flat = occ.reshape(nx * ny, nz).astype(np.float64)
-    counts = occ_flat.sum(axis=1)  # (#columns,)
-    sum_z = occ_flat @ zc  # (#columns,)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        zbar = np.where(counts > 0, sum_z / counts, (lo[2] + hi[2]) / 2.0)
-    zbar = zbar.reshape(nx, ny)
-
-    vol = vol_xy[mask]
-    mid = np.column_stack((Xc[mask], Yc[mask], zbar[mask])).astype(np.float64)
-    return vol, mid
+    # whole bins around every node and every voxel column of the grid ...
+    nodes_lo = np.floor(skel.nodes[:, :2].min(axis=0) / bin_size)
+    nodes_hi = np.ceil(skel.nodes[:, :2].max(axis=0) / bin_size)
+    shape = np.asarray(grid["grid_shape"][:2])
+    centre = np.asarray(grid["bbox_lo"][:2], dtype=float) + 0.5 * h
+    low = np.minimum(np.floor(centre / bin_size), nodes_lo)
+    high = np.maximum(np.ceil((centre + (shape - 1) * h) / bin_size), nodes_hi)
+    hist, x_edges, y_edges = histogram(low * bin_size, high * bin_size)
+    # ... then without the outer bins that hold neither a node nor volume
+    tight_low, tight_high = nodes_lo.copy(), nodes_hi.copy()
+    for axis in (0, 1):
+        held = np.flatnonzero(hist.sum(axis=1 - axis) > 0)
+        if held.size:
+            tight_low[axis] = min(tight_low[axis], low[axis] + held[0])
+            tight_high[axis] = max(tight_high[axis], low[axis] + held[-1] + 1)
+    if np.any(tight_low != low) or np.any(tight_high != high):
+        hist, x_edges, y_edges = histogram(tight_low * bin_size, tight_high * bin_size)
+    return hist, x_edges, y_edges, total
 
 
 def gridder1d(
@@ -1370,8 +1429,8 @@ def get_z_profile(
 
     Notes
     -----
-    * volume uses a single voxelization (_voxelize_union) and
-      **do not double count** at branch junctions or soma contacts.
+    * volume is skeliner's voxel union (`sk.dx.volume`): branch junctions and
+      soma contacts are **not counted twice**.
     * 'include_soma' defaults to False to match the 'length' convention
       (edges only). Set True if you want soma membrane/volume included.
     * For stable plots, keep bin_size >= voxel_size (if you set voxel_size).
@@ -1380,8 +1439,9 @@ def get_z_profile(
 
     if measure == "length":
         density, mid = segment_lengths(skel)
+        z_vals = mid[:, 2]
     elif measure == "volume":
-        density, mid = z_slince_volumes(
+        density, z_vals = z_slice_volumes(
             skel,
             voxel_size=voxel_size,
             include_soma=include_soma,
@@ -1390,11 +1450,11 @@ def get_z_profile(
     else:
         raise ValueError("measure must be one of {'length','volume'}")
 
-    z_vals = mid[:, 2]
-
     # window
     if extent is None:
-        z_min, z_max = np.floor(z_vals.min()), np.ceil(z_vals.max())
+        # a morphology without volume still gets the window of its nodes
+        spread = z_vals if z_vals.size else skel.nodes[:, 2]
+        z_min, z_max = np.floor(spread.min()), np.ceil(spread.max())
         # a skeleton lying exactly on one integer depth still gets one bin
         z_max = max(z_max, z_min + bin_size)
     else:
@@ -1509,7 +1569,9 @@ def get_xy_profile(
     measure:
         "length" – dendritic cable length per bin (histogram -> Gaussian smooth).
         "volume" – **union-correct** morphology volume per bin (voxel union),
-                   integrated along z, then binned in x-y.
+                   integrated along z, then binned in x-y. Every bin that
+                   holds voxels is one call into skeliner: many small bins
+                   take long.
 
     Returns
     -------
@@ -1520,42 +1582,41 @@ def get_xy_profile(
     if measure == "length":
         density, mid = segment_lengths(skel)
         units = skel.meta.get("unit", "µm")
+        total = float(density.sum())
+
+        if extents is None:
+            # tight box around the edges' midpoints and the nodes, in whole bins
+            x_all = np.concatenate((mid[:, 0], skel.nodes[:, 0]))
+            y_all = np.concatenate((mid[:, 1], skel.nodes[:, 1]))
+            xmin = np.floor(x_all.min() / bin_size) * bin_size
+            xmax = np.ceil(x_all.max() / bin_size) * bin_size
+            ymin = np.floor(y_all.min() / bin_size) * bin_size
+            ymax = np.ceil(y_all.max() / bin_size) * bin_size
+        else:
+            xmin, xmax, ymin, ymax = extents
+
+        # every cell is square (bin_size × bin_size)
+        x_edges = _edges_from_bin_size(xmin, xmax, bin_size)
+        y_edges = _edges_from_bin_size(ymin, ymax, bin_size)
+        xy_hist, _, _ = np.histogram2d(
+            mid[:, 0], mid[:, 1], bins=[x_edges, y_edges], weights=density
+        )
     elif measure == "volume":
-        density, mid = xy_column_volume(
+        units = f"{skel.meta.get('unit', 'µm')}³"
+        xy_hist, x_edges, y_edges, total = _xy_volume_histogram(
             skel,
+            extents,
+            bin_size,
             voxel_size=voxel_size,
             include_soma=include_soma,
             radius_metric=radius_metric,
         )
-        units = f"{skel.meta.get('unit', 'µm')}³"
     else:
         raise ValueError("measure must be one of {'length','volume'}")
 
-    # 0) bounding box ----------------------------------------------------------
-    if extents is None:
-        x_all = np.concatenate((mid[:, 0], skel.nodes[:, 0]))
-        y_all = np.concatenate((mid[:, 1], skel.nodes[:, 1]))
-        xmin, xmax = x_all.min(), x_all.max()
-        ymin, ymax = y_all.min(), y_all.max()
-
-        xmin = np.floor(xmin / bin_size) * bin_size
-        xmax = np.ceil(xmax / bin_size) * bin_size
-        ymin = np.floor(ymin / bin_size) * bin_size
-        ymax = np.ceil(ymax / bin_size) * bin_size
-
-    else:
-        xmin, xmax, ymin, ymax = extents
-
-    # 1) build edges so that *every* cell is square (bin_size × bin_size) ------
-    x_edges = _edges_from_bin_size(xmin, xmax, bin_size)
-    y_edges = _edges_from_bin_size(ymin, ymax, bin_size)
-
-    xy_hist, _, _ = np.histogram2d(
-        mid[:, 0], mid[:, 1], bins=[x_edges, y_edges], weights=density
-    )
-
     xy_dist = gaussian_filter(xy_hist, sigma=smooth, mode="nearest")
-    xy_dist *= density.sum() / xy_dist.sum()
+    if xy_dist.sum() > 0:
+        xy_dist *= total / xy_dist.sum()
 
     x = 0.5 * (x_edges[:-1] + x_edges[1:])
     y = 0.5 * (y_edges[:-1] + y_edges[1:])
@@ -1758,7 +1819,7 @@ class Warper:
                 self.warped_skeleton.extra["med_z_on"] = None
                 self.warped_skeleton.extra["med_z_off"] = None
         elif path.suffix.lower() == ".npz":
-            self.warped_skeleton = sk.io.load_npz(path)
+            self.warped_skeleton = sk.io.load_skeleton_npz(path)
 
         if self.verbose:
             print(f"[pywarper] Loaded warped skeleton -> {path}")

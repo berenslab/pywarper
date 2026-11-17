@@ -29,7 +29,7 @@ from importlib import metadata as _metadata
 from typing import Any, Iterator
 
 import numpy as np
-from hea.sparse import cho_solve
+from hea.sparse import cho_factor
 from pygridfit import GamFit, GridFit
 from pygridfit.autosmooth import GAMMA_DEFAULT
 from scipy.interpolate import RegularGridInterpolator
@@ -621,6 +621,42 @@ def assign_local_coordinates(triangles: np.ndarray) -> tuple[np.ndarray, ...]:
     return w1, w2, w3, zeta
 
 
+class CholeskySolver:
+    """
+    Sparse Cholesky solves that keep the analysis of the last matrix.
+
+    A matrix with the same sparsity pattern as the one before it is factorized
+    against that analysis, which is most of a factorization's cost; any other
+    matrix is analyzed afresh. `analyses` counts those.
+    """
+
+    def __init__(self) -> None:
+        self.analyses = 0
+        self._factor = None
+        self._pattern: tuple[np.ndarray, np.ndarray] | None = None
+
+    def solve(self, matrix, right: np.ndarray) -> np.ndarray:
+        """Solve ``matrix @ x = right`` for a symmetric positive definite CSC
+        `matrix`."""
+        # two matrices have one pattern when their sorted indices agree
+        matrix.sort_indices()
+        same = self._pattern is not None and all(
+            np.array_equal(kept, new)
+            for kept, new in zip(self._pattern, (matrix.indptr, matrix.indices))
+        )
+        if same:
+            self._factor.factorize(matrix)
+        else:
+            # the old factor goes before the new one is built
+            self._factor = self._pattern = None
+            # order="amd": a system is factorized once or twice, so the default
+            # "best" pays METIS's ordering cost up front and never amortizes it.
+            self._factor = cho_factor(matrix, order="amd")
+            self._pattern = (matrix.indptr.copy(), matrix.indices.copy())
+            self.analyses += 1
+        return self._factor.solve(right)
+
+
 def conformal_map_indep_fixed_diagonals(
     mainDiagDist: float,
     skewDiagDist: float,
@@ -630,6 +666,7 @@ def conformal_map_indep_fixed_diagonals(
     *,
     n_anchors: int = 16,
     pin_map: np.ndarray | None = None,
+    solver: CholeskySolver | None = None,
     backward_compatible: bool = False,
 ) -> np.ndarray:
     """
@@ -660,6 +697,11 @@ def conformal_map_indep_fixed_diagonals(
         (2, 2) map placing the 8/16-anchor pins, see `anchor_pin_map`, which
         computes it from `VZmesh` when not given. `build_mapping` passes one map
         shared by both bands so that their pins agree.
+    solver : CholeskySolver, optional
+        Solves the sparse system. Surfaces on the same grid with the same pins
+        give systems of one sparsity pattern: mapped with one solver, the
+        second reuses the first's analysis. `build_mapping` does so for the
+        two bands.
 
     Returns
     -------
@@ -675,6 +717,8 @@ def conformal_map_indep_fixed_diagonals(
     The final 2D layout merges two separate diagonal constraints.
     """
     M, N = VZmesh.shape
+    if solver is None:
+        solver = CholeskySolver()
 
     if backward_compatible:
         xpos_new = xpos + 1
@@ -748,12 +792,9 @@ def conformal_map_indep_fixed_diagonals(
 
         # AtA is symmetric positive definite, so a sparse Cholesky applies and is
         # several times faster than the general LU of scipy's spsolve.
-        #
-        # order="amd": each system is factorized once, so the default "best" pays
-        # METIS's ordering cost up front and never amortizes it.
         AtA = (A.T @ A).tocsc()
         Atb = A.T @ b
-        sol = cho_solve(AtA, Atb, order="amd")
+        sol = solver.solve(AtA, Atb)
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
@@ -1195,6 +1236,7 @@ def build_mapping(
             anchor_pin_map(on_subsampled, sampled_x_idx, sampled_y_idx, n_anchors)
             + anchor_pin_map(off_subsampled, sampled_x_idx, sampled_y_idx, n_anchors)
         )
+    solver = CholeskySolver()
     mapped_on = conformal_map_indep_fixed_diagonals(
         float(main_diag_dist),
         float(skew_diag_dist),
@@ -1203,6 +1245,7 @@ def build_mapping(
         on_subsampled,
         n_anchors=n_anchors,
         pin_map=pin_map,
+        solver=solver,
         backward_compatible=backward_compatible,
     )
     if verbose:
@@ -1219,8 +1262,10 @@ def build_mapping(
         off_subsampled,
         n_anchors=n_anchors,
         pin_map=pin_map,
+        solver=solver,
         backward_compatible=backward_compatible,
     )
+    del solver  # and with it the factor, before the bands are aligned
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
