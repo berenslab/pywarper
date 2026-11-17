@@ -60,8 +60,8 @@ def poly_basis_2d(x: np.ndarray, y: np.ndarray, max_order: int) -> np.ndarray:
     Order layout matches the original code:
         [1,
          x, y,
-         x²,  x·y,  y²,      # order 2
-         x³,  x²y, x y², y³, …]
+         y²,  x·y,  x²,      # order 2
+         y³,  x y², x²y, x³, …]
     """
     cols = [np.ones_like(x), x, y]  # constant + linear
     for order in range(2, max_order + 1):
@@ -290,6 +290,128 @@ def normalize_nodes(
     return normalized_nodes
 
 
+def _bracket(
+    values: np.ndarray, valid: np.ndarray, query: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per row, the two valid columns of `values` (increasing) that bracket `query`."""
+    n_cols = values.shape[1]
+    idx = np.arange(n_cols)
+    at_or_below = valid & (values <= query[:, None])
+    lo = np.where(at_or_below, idx, -1).max(axis=1)
+    hi = np.where(valid & ~at_or_below, idx, n_cols).min(axis=1)
+    first = np.argmax(valid, axis=1)
+    second = np.argmax(valid & (idx > first[:, None]), axis=1)
+    last = n_cols - 1 - np.argmax(valid[:, ::-1], axis=1)
+    second_last = (
+        n_cols - 1 - np.argmax((valid & (idx < last[:, None]))[:, ::-1], axis=1)
+    )
+    # outside every valid layer the outermost interval is extended
+    under, over = lo < 0, hi >= n_cols
+    lo = np.where(under, first, np.where(over, second_last, lo))
+    hi = np.where(under, second, np.where(over, last, hi))
+    return lo, hi
+
+
+class _DepthModel:
+    """Column-wise depth through a mapping's layers: relative depth and its inverse."""
+
+    def __init__(self, surface_mapping: dict, backward_compatible: bool = False):
+        on = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
+        off = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
+        self.first = 1.0 if backward_compatible else 0.0
+        self.shape = on.shape
+        self.gx = np.arange(on.shape[0]) + self.first
+        self.gy = np.arange(on.shape[1]) + self.first
+        heights, depths = [on, off], [0.0, 1.0]
+        if "extra_surfaces" in surface_mapping:
+            heights += [
+                np.asarray(h, dtype=float) for h in surface_mapping["extra_surfaces"]
+            ]
+            depths += [float(d) for d in surface_mapping["extra_surface_depths"]]
+        self.depths = np.asarray(depths)
+        self.fields = [RegularGridInterpolator((self.gx, self.gy), h) for h in heights]
+        # extra layers join outward from the bands, the nearest first
+        outside = (self.depths < 0) | (self.depths > 1)
+        distance = np.where(
+            outside,
+            np.maximum(-self.depths, self.depths - 1.0),
+            np.minimum(self.depths, 1.0 - self.depths),
+        )
+        self.join = [int(k) + 2 for k in np.argsort(distance[2:], kind="stable")]
+        self.order = np.argsort(self.depths, kind="stable")
+
+    def xy(self, points: np.ndarray) -> np.ndarray:
+        """x, y of `points`, clipped to the surfaces' grid."""
+        return np.column_stack(
+            [
+                np.clip(points[:, 0], self.gx[0], self.gx[-1]),
+                np.clip(points[:, 1], self.gy[0], self.gy[-1]),
+            ]
+        )
+
+    def pixel(self, xy: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Nearest grid indices of clipped x, y."""
+        ix = np.clip(np.rint(xy[:, 0] - self.first).astype(int), 0, self.shape[0] - 1)
+        iy = np.clip(np.rint(xy[:, 1] - self.first).astype(int), 0, self.shape[1] - 1)
+        return ix, iy
+
+    def stack(
+        self, xy: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Layer heights at xy in depth order, oriented to grow with depth, the
+        depths, which layers keep that order in each column, and the orientation."""
+        z = np.column_stack([f(xy) for f in self.fields])
+        sign = np.sign(z[:, 1] - z[:, 0])
+        z = z * sign[:, None]
+        valid = np.ones(z.shape, dtype=bool)
+        kept = [0, 1]
+        for k in self.join:
+            below = [j for j in kept if self.depths[j] < self.depths[k]]
+            above = [j for j in kept if self.depths[j] > self.depths[k]]
+            lo = hi = None
+            if below:
+                lo = np.where(valid[:, below], z[:, below], -np.inf).max(axis=1)
+            if above:
+                hi = np.where(valid[:, above], z[:, above], np.inf).min(axis=1)
+            ok = np.ones(len(z), dtype=bool)
+            if lo is not None:
+                ok &= z[:, k] > lo
+            if hi is not None:
+                ok &= z[:, k] < hi
+            valid[:, k] = ok
+            kept.append(k)
+        return z[:, self.order], self.depths[self.order], valid[:, self.order], sign
+
+    def relative(self, points: np.ndarray) -> np.ndarray:
+        """Relative depth of (N, 3) points."""
+        points = np.asarray(points, dtype=float)
+        xy = self.xy(points)
+        if len(self.fields) == 2:
+            z_on, z_off = self.fields[0](xy), self.fields[1](xy)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return (points[:, 2] - z_on) / (z_off - z_on)
+        z, depths, valid, sign = self.stack(xy)
+        p = points[:, 2] * sign
+        lo, hi = _bracket(z, valid, p)
+        rows = np.arange(len(p))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return depths[lo] + (p - z[rows, lo]) / (z[rows, hi] - z[rows, lo]) * (
+                depths[hi] - depths[lo]
+            )
+
+    def height(self, xy: np.ndarray, depth: np.ndarray) -> np.ndarray:
+        """z at which a point over (N, 2) xy has the given relative depth."""
+        xy = self.xy(np.asarray(xy, dtype=float))
+        depth = np.asarray(depth, dtype=float)
+        z, depths, valid, sign = self.stack(xy)
+        lo, hi = _bracket(np.broadcast_to(depths, z.shape), valid, depth)
+        rows = np.arange(len(depth))
+        oriented = z[rows, lo] + (depth - depths[lo]) / (depths[hi] - depths[lo]) * (
+            z[rows, hi] - z[rows, lo]
+        )
+        return oriented * sign
+
+
 def relative_depth(
     points: np.ndarray,
     surface_mapping: dict,
@@ -303,8 +425,8 @@ def relative_depth(
     the ON to the OFF band in the point's column, extended linearly outside
     them. With extra surfaces (see `build_mapping`) the depth is interpolated
     piecewise between the two layers that bracket the point and extended
-    linearly with the outermost interval; columns where the layers are not in
-    the order of their depths fall back to the two bands.
+    linearly with the outermost interval. An extra layer that is out of order
+    in a column, given the layers nearer the bands, is left out there.
 
     Parameters
     ----------
@@ -320,46 +442,36 @@ def relative_depth(
     np.ndarray
         (N,) relative depth.
     """
-    points = np.asarray(points, dtype=float)
-    on = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
-    off = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
-    first = 1.0 if backward_compatible else 0.0
-    gx = np.arange(on.shape[0]) + first
-    gy = np.arange(on.shape[1]) + first
-    xy = np.column_stack(
-        [np.clip(points[:, 0], gx[0], gx[-1]), np.clip(points[:, 1], gy[0], gy[-1])]
-    )
-    z_on = RegularGridInterpolator((gx, gy), on)(xy)
-    z_off = RegularGridInterpolator((gx, gy), off)(xy)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        two_band = (points[:, 2] - z_on) / (z_off - z_on)
-    if "extra_surfaces" not in surface_mapping:
-        return two_band
+    return _DepthModel(surface_mapping, backward_compatible).relative(points)
 
-    depths = np.concatenate(
-        [[0.0, 1.0], np.asarray(surface_mapping["extra_surface_depths"], float)]
-    )
-    layers = [z_on, z_off] + [
-        RegularGridInterpolator((gx, gy), np.asarray(h, dtype=float))(xy)
-        for h in surface_mapping["extra_surfaces"]
-    ]
-    order = np.argsort(depths)
-    depths = depths[order]
-    z = np.column_stack(layers)[:, order]
-    # orient each column so that z grows with depth, as it does from ON to OFF
-    sign = np.sign(z_off - z_on)
-    z = z * sign[:, None]
-    p = points[:, 2] * sign
-    ordered = np.all(np.diff(z, axis=1) > 0, axis=1)
 
-    lo = np.clip((p[:, None] > z).sum(axis=1) - 1, 0, len(depths) - 2)
-    rows = np.arange(len(p))
-    z_lo, z_hi = z[rows, lo], z[rows, lo + 1]
-    with np.errstate(divide="ignore", invalid="ignore"):
-        piecewise = depths[lo] + (p - z_lo) / (z_hi - z_lo) * (
-            depths[lo + 1] - depths[lo]
-        )
-    return np.where(ordered, piecewise, two_band)
+def height_at_depth(
+    xy: np.ndarray,
+    depth: np.ndarray,
+    surface_mapping: dict,
+    *,
+    backward_compatible: bool = False,
+) -> np.ndarray:
+    """
+    Inverse of `relative_depth`: the z at which each (x, y) has relative depth `depth`.
+
+    Parameters
+    ----------
+    xy : np.ndarray
+        (N, 2) positions before warping, in the surfaces' units.
+    depth : np.ndarray
+        (N,) relative depth (0 at the ON band, 1 at the OFF band).
+    surface_mapping : dict
+        Output of `build_mapping`.
+    backward_compatible : bool, default=False
+        The surfaces' grid starts at 1 instead of 0.
+
+    Returns
+    -------
+    np.ndarray
+        (N,) z in the surfaces' units.
+    """
+    return _DepthModel(surface_mapping, backward_compatible).height(xy, depth)
 
 
 def node_coverage(
@@ -369,7 +481,7 @@ def node_coverage(
     backward_compatible: bool = False,
 ) -> dict | None:
     """
-    Where the imaged volume and the band observations end, per node.
+    Where the imaged volume and the layer observations end, per node.
 
     Parameters
     ----------
@@ -377,7 +489,8 @@ def node_coverage(
         (N, 3) node positions before warping, in the surfaces' units.
     surface_mapping : dict
         Output of `build_mapping`. Besides the surfaces, only its ``volume_z``,
-        ``on_support`` and ``off_support`` entries are read.
+        ``on_support``, ``off_support`` and ``extra_surface_supports`` entries
+        are read.
     backward_compatible : bool, default=False
         The surfaces' grid starts at 1 instead of 0.
 
@@ -393,28 +506,24 @@ def node_coverage(
             ±inf on a side whose face is unknown.
         ``on_support``, ``off_support`` : (N,) bool
             Whether that band was observed in the node's column.
+        ``extra_support`` : (N, K) bool, ``extra_names`` : (K,)
+            Whether each extra layer was observed in the node's column, and the
+            layers' names.
     """
     has_faces = "volume_z" in surface_mapping
     bands = [b for b in ("on", "off") if f"{b}_support" in surface_mapping]
-    if not has_faces and not bands:
+    has_extra = "extra_surface_supports" in surface_mapping
+    if not has_faces and not bands and not has_extra:
         return None
 
     nodes = np.asarray(nodes, dtype=float)
-    on = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
-    first = 1.0 if backward_compatible else 0.0
-    gx = np.arange(on.shape[0]) + first
-    gy = np.arange(on.shape[1]) + first
-    xy = np.column_stack(
-        [np.clip(nodes[:, 0], gx[0], gx[-1]), np.clip(nodes[:, 1], gy[0], gy[-1])]
-    )
+    model = _DepthModel(surface_mapping, backward_compatible)
+    xy = model.xy(nodes)
 
     coverage: dict = {}
     if has_faces:
-        off = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
-        z_on = RegularGridInterpolator((gx, gy), on)(xy)
-        z_off = RegularGridInterpolator((gx, gy), off)(xy)
         # z grows with depth (+1) or against it (-1) in each column
-        sign = np.sign(z_off - z_on)
+        sign = np.sign(model.fields[1](xy) - model.fields[0](xy))
         faces = np.asarray(surface_mapping["volume_z"], dtype=float)
         rel = np.empty((len(nodes), 2))
         for k, face in enumerate(faces):
@@ -423,16 +532,17 @@ def node_coverage(
                 rel[:, k] = (-np.inf if k == 0 else np.inf) * sign
             else:
                 at_face = np.column_stack([xy, np.full(len(nodes), face)])
-                rel[:, k] = relative_depth(
-                    at_face, surface_mapping, backward_compatible=backward_compatible
-                )
+                rel[:, k] = model.relative(at_face)
         coverage["depth_rel"] = np.sort(rel, axis=1)
 
-    ix = np.clip(np.rint(xy[:, 0] - first).astype(int), 0, on.shape[0] - 1)
-    iy = np.clip(np.rint(xy[:, 1] - first).astype(int), 0, on.shape[1] - 1)
+    ix, iy = model.pixel(xy)
     for band in bands:
         support = np.asarray(surface_mapping[f"{band}_support"], dtype=bool)
         coverage[f"{band}_support"] = support[ix, iy]
+    if has_extra:
+        supports = np.asarray(surface_mapping["extra_surface_supports"], dtype=bool)
+        coverage["extra_support"] = supports[:, ix, iy].T
+        coverage["extra_names"] = np.asarray(surface_mapping["extra_surface_names"])
     return coverage
 
 
@@ -593,7 +703,7 @@ def warp_skeleton(
             extents=xy_profile_extents,
             bin_size=xy_profile_bin_size,
             smooth=xy_profile_smooth,
-            measure="length",
+            measure=measure,
             include_soma=xy_profile_include_soma,
             voxel_size=xy_profile_voxel_size,
             radius_metric=radius_metric,
@@ -1489,6 +1599,8 @@ def get_coverage(skel: Skeleton, extent: list[float] | tuple[float, float]) -> d
             in that cable's column.
         ``on_unsupported`` / ``off_unsupported``
             That band was not observed in the cable's column.
+        ``<name>_unsupported``
+            Same for each extra layer the skeleton has a record of.
     """
     out = {
         k: np.nan
@@ -1508,6 +1620,10 @@ def get_coverage(skel: Skeleton, extent: list[float] | tuple[float, float]) -> d
         if f"{band}_support" in coverage:
             support = np.asarray(coverage[f"{band}_support"], dtype=bool)
             out[f"{band}_unsupported"] = float(lengths[~support].sum() / total)
+    if "extra_support" in coverage:
+        support = np.asarray(coverage["extra_support"], dtype=bool)
+        for k, name in enumerate(coverage["extra_names"]):
+            out[f"{name}_unsupported"] = float(lengths[~support[:, k]].sum() / total)
     return out
 
 
@@ -1730,12 +1846,13 @@ class Warper:
         volume_z: tuple[float | None, float | None] | None = None,
         on_support: np.ndarray | None = None,
         off_support: np.ndarray | None = None,
+        extra_surfaces: dict | None = None,
     ) -> "Warper":
         """Create the quasi-conformal surface mapping.
 
-        `volume_z`, `on_support` and `off_support` are passed on to
-        :func:`pywarper.surface.build_mapping`; warped skeletons then record
-        their coverage.
+        `volume_z`, `on_support`, `off_support` and `extra_surfaces` are passed
+        on to :func:`pywarper.surface.build_mapping`; warped skeletons then
+        record their coverage and take their depth from every layer.
         """
         if self.off_sac_surface is None or self.on_sac_surface is None:
             raise RuntimeError("Surfaces not fitted. Call fit_surfaces() first.")
@@ -1775,6 +1892,7 @@ class Warper:
             volume_z=volume_z,
             on_support=on_support,
             off_support=off_support,
+            extra_surfaces=extra_surfaces,
             backward_compatible=backward_compatible,
             verbose=self.verbose,
         )
@@ -1929,6 +2047,7 @@ class Warper:
                 smooth=xy_profile_smooth
                 if xy_profile_smooth is not None
                 else self.warped_skeleton.extra["xy_profiles"][measure]["smooth"],
+                measure=measure,
                 include_soma=xy_profile_include_soma
                 if xy_profile_include_soma is not None
                 else self.warped_skeleton.extra["xy_profiles"][measure]["include_soma"],

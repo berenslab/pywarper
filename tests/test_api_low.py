@@ -265,7 +265,78 @@ def test_extra_surfaces_set_depth_piecewise():
     coverage = warp_skeleton(_two_dendrites(), mapping).extra["coverage"]
     assert np.allclose(coverage["depth"], [-8.0, 27.0])
 
-    with pytest.raises(NotImplementedError):
-        unwarp_nodes(np.zeros((1, 3)), mapping)
+    # flat bands map x, y onto themselves, so the piecewise depth inverts exactly
+    flat = normalize_nodes(warped, med_on, med_off)
+    assert np.allclose(unwarp_nodes(flat, mapping), nodes, atol=1e-6)
+
     with pytest.raises(ValueError, match="depths"):
         build_mapping(on, off, [0, 39, 0, 39], extra_surfaces={"x": (on, 1.0)})
+    with pytest.raises(ValueError, match="'on' or 'off'"):
+        build_mapping(on, off, [0, 39, 0, 39], extra_surfaces={"on": (on - 5, -0.5)})
+
+
+def test_extra_surface_out_of_order_is_left_out_only_where_it_is():
+    from pywarper.warpers import (
+        height_at_depth,
+        normalize_nodes,
+        relative_depth,
+        warp_nodes,
+    )
+
+    on = np.full((40, 40), 10.0)
+    off = np.full((40, 40), 20.0)
+    deep = np.full((40, 40), 4.0)
+    deep[:20] = 12.0  # above the ON band for x < 20: no longer under it
+    mapping = build_mapping(
+        on,
+        off,
+        [0, 39, 0, 39],
+        conformal_jump=1,
+        extra_surfaces={
+            "deep": (deep, -0.5),
+            "outer": (np.full((40, 40), 26.0), 1.75),
+        },
+    )
+    nodes = np.array(
+        [[10.0, 20.0, 7.0], [10.0, 20.0, 23.0], [30.0, 20.0, 7.0], [30.0, 20.0, 23.0]]
+    )
+    warped, med_on, med_off = warp_nodes(nodes, mapping)
+    depth = normalize_nodes(warped, med_on, med_off)[:, 2]
+    # x = 10: under the ON band the two bands alone, above OFF the outer layer still
+    assert np.allclose(depth, [-3.6, 16.5, -3.0, 16.5])
+
+    relative = relative_depth(nodes, mapping)
+    assert np.allclose(height_at_depth(nodes[:, :2], relative, mapping), nodes[:, 2])
+
+
+def test_coverage_names_the_extra_layers_that_were_not_observed():
+    on = np.full((40, 40), 10.0)
+    off = np.full((40, 40), 20.0)
+    seen = np.ones((40, 40), dtype=bool)
+    seen[20:, :] = False
+    mapping = build_mapping(
+        on,
+        off,
+        [0, 39, 0, 39],
+        conformal_jump=1,
+        extra_surfaces={
+            "deep": (np.full((40, 40), 4.0), -0.5, seen),
+            "outer": (np.full((40, 40), 26.0), 1.75),
+        },
+    )
+    assert mapping["extra_surface_supports"].shape == (2, 40, 40)
+    skel = _two_dendrites()
+    warped = warp_skeleton(skel, mapping)
+    coverage = warped.extra["coverage"]
+    assert coverage["extra_names"].tolist() == ["deep", "outer"]
+    assert np.array_equal(coverage["extra_support"][:, 0], skel.nodes[:, 0] < 20)
+    assert coverage["extra_support"][:, 1].all()  # given without a mask: observed
+
+    shares = get_coverage(warped, extent=(-8.0, 16.0))
+    assert np.isclose(shares["deep_unsupported"], 40 / 60)
+    assert shares["outer_unsupported"] == 0.0
+
+    with pytest.raises(ValueError, match="mask of extra surface 'deep'"):
+        build_mapping(
+            on, off, [0, 39, 0, 39], extra_surfaces={"deep": (on - 6, -0.5, seen[:-1])}
+        )

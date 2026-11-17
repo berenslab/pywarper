@@ -1009,7 +1009,7 @@ def build_mapping(
     volume_z: tuple[float | None, float | None] | None = None,
     on_support: np.ndarray | None = None,
     off_support: np.ndarray | None = None,
-    extra_surfaces: dict[str, tuple[np.ndarray, float]] | None = None,
+    extra_surfaces: dict[str, tuple] | None = None,
     verbose: bool = False,
     backward_compatible: bool = False,  # for MATLAB compatibility
 ) -> dict:
@@ -1054,13 +1054,14 @@ def build_mapping(
         Same shape as the surfaces; True where that band was observed rather than
         filled in or extrapolated. Lets a warp record which nodes sit over an
         inferred band.
-    extra_surfaces : dict of name -> (height field, relative depth), optional
+    extra_surfaces : dict of name -> (height field, relative depth[, observed]), optional
         Further reference layers, each a height field with the surfaces' shape
         and the relative depth it is to land at (0 = ON band, 1 = OFF band, e.g.
         -0.875 for a layer at -10.5 when the bands sit at 0 and 12). Warps then
         interpolate depth piecewise between the two layers that bracket each
         node instead of linearly between the bands; lateral positions still come
-        from the two bands.
+        from the two bands. An optional third entry is a boolean mask with the
+        surfaces' shape, True where the layer was observed.
     verbose : bool, default False
         If *True*, print timing information.
 
@@ -1081,6 +1082,9 @@ def build_mapping(
             Only when given: the face z (NaN where unknown) and the support masks.
         ``extra_surface_names``, ``extra_surfaces``, ``extra_surface_depths``
             Only with `extra_surfaces`: names, (K, X, Y) heights, (K,) depths.
+        ``extra_surface_supports``
+            Only when an extra surface came with its mask: (K, X, Y), all True
+            for a layer given without one.
     """
     faces = None
     if volume_z is not None:
@@ -1103,17 +1107,29 @@ def build_mapping(
     extras = {}
     if extra_surfaces:
         names = list(extra_surfaces)
-        heights, depths = [], []
+        heights, depths, observed = [], [], []
         for name in names:
-            height, depth = extra_surfaces[name]
+            if name in ("on", "off"):
+                raise ValueError("an extra surface cannot be named 'on' or 'off'.")
+            height, depth, *mask = extra_surfaces[name]
             height = np.asarray(height, dtype=float)
             if height.shape != np.shape(on_sac_surface):
                 raise ValueError(
                     f"extra surface {name!r} must have the surfaces' shape "
                     f"{np.shape(on_sac_surface)}."
                 )
+            if mask and mask[0] is not None:
+                mask = np.asarray(mask[0], dtype=bool)
+                if mask.shape != height.shape:
+                    raise ValueError(
+                        f"the mask of extra surface {name!r} must have the "
+                        f"surfaces' shape {height.shape}."
+                    )
+            else:
+                mask = None
             heights.append(height)
             depths.append(float(depth))
+            observed.append(mask)
         all_depths = np.array([0.0, 1.0] + depths)
         if len(np.unique(all_depths)) != len(all_depths):
             raise ValueError(
@@ -1125,6 +1141,13 @@ def build_mapping(
             "extra_surfaces": np.stack(heights),
             "extra_surface_depths": np.array(depths),
         }
+        if any(mask is not None for mask in observed):
+            extras["extra_surface_supports"] = np.stack(
+                [
+                    np.ones(height.shape, dtype=bool) if mask is None else mask
+                    for height, mask in zip(heights, observed)
+                ]
+            )
 
     if backward_compatible:
         xmin, xmax, ymin, ymax = np.asarray(bounds) - 1  # Convert to 0-based indexing

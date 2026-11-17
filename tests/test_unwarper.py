@@ -264,6 +264,36 @@ def test_unwarp_nodes_optimize_refines_nontrivial_mapping():
     assert np.allclose(renorm_opt, normalized, rtol=1e-8, atol=1e-8)
 
 
+def test_unwarp_nodes_inverts_a_warp_through_extra_surfaces():
+    from pywarper.surface import build_mapping
+
+    n = 60
+    x, y = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
+    on = 20.0 + 6.0 * ((x - 30) ** 2 + (y - 30) ** 2) / 900.0
+    off = on + 12.0 + 1.5 * np.sin(x / 15.0)
+    mapping = build_mapping(
+        on,
+        off,
+        [0, n - 1, 0, n - 1],
+        conformal_jump=1,
+        extra_surfaces={
+            "deep": (on - (8.0 + np.cos(y / 12.0)), -0.6),
+            "outer": (off + 9.0 + 0.8 * np.sin((x + y) / 20.0), 1.8),
+        },
+    )
+    rng = np.random.default_rng(0)
+    nodes = np.column_stack(
+        [rng.uniform(8, 50, 200), rng.uniform(8, 50, 200), rng.uniform(5, 55, 200)]
+    )
+    warped, med_z_on, med_z_off = warp_nodes(nodes, mapping)
+    normalized = normalize_nodes(warped, med_z_on=med_z_on, med_z_off=med_z_off)
+
+    local = np.abs(unwarp_nodes(normalized, mapping) - nodes)
+    assert local[:, :2].max() < 0.02 and local[:, 2].max() < 0.01
+    refined = unwarp_nodes(normalized, mapping, method="optimize")
+    assert np.abs(refined - nodes).max() < 1e-6
+
+
 def test_unwarp_nodes_optimize_invalid_params_raise():
     mapping = _identity_surface_mapping()
     nodes = np.array([[10.0, 10.0, 5.0]], dtype=float)

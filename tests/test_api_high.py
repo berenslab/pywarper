@@ -168,3 +168,13 @@ def test_renormalize_matches_warp_skeleton_units():
     assert np.allclose(
         unit.extra["coverage"]["depth"], warped.extra["coverage"]["depth"] / 12.0
     )
+
+    # each profile is the measure it is filed under, after a renormalize too
+    for skel in (warped, same):
+        for kind in ("z_profiles", "xy_profiles"):
+            for measure in ("length", "volume"):
+                assert skel.extra[kind][measure]["measure"] == measure
+        xy = skel.extra["xy_profiles"]
+        assert not np.allclose(
+            xy["volume"]["distribution"].sum(), xy["length"]["distribution"].sum()
+        )

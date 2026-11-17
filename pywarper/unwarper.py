@@ -12,6 +12,7 @@ from .utils import build_surface_correspondences, resolve_conformal_jump
 from .warpers import (
     _apply_local_ls_state,
     _build_local_ls_state,
+    _DepthModel,
     local_ls_registration,
 )
 
@@ -68,12 +69,6 @@ def _prepare_unwarp_inputs(
     points = np.asarray(nodes, dtype=float)
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError("nodes must be an (N, 3) array.")
-    if "extra_surfaces" in surface_mapping:
-        raise NotImplementedError(
-            "unwarping through a mapping with extra surfaces is not implemented: "
-            "their piecewise depth has no inverse here yet."
-        )
-
     resolved_jump = resolve_conformal_jump(surface_mapping, conformal_jump)
     (
         on_input_pts,
@@ -99,6 +94,35 @@ def _prepare_unwarp_inputs(
     return prenormed_nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts
 
 
+def _unwarp_through_layers(
+    prenormed_nodes: np.ndarray,
+    model: _DepthModel,
+    inverse_state,
+    med_z_on: float,
+    med_z_off: float,
+    iterations: int = 4,
+) -> np.ndarray:
+    """Local-LS inverse when depth is piecewise: x, y from the two-band inverse,
+    z from the layers in that column, repeated until the depth settles to 1e-5."""
+    depth = (prenormed_nodes[:, 2] - med_z_on) / (med_z_off - med_z_on)
+    two_band = depth.copy()
+    recovered = prenormed_nodes.copy()
+    for i in range(iterations):
+        guess = prenormed_nodes.copy()
+        guess[:, 2] = med_z_on + two_band * (med_z_off - med_z_on)
+        recovered = _apply_local_ls_state(guess, inverse_state, warn=i == 0)
+        xy = model.xy(recovered)
+        recovered[:, 2] = model.height(xy, depth)
+        z_on, z_off = model.fields[0](xy), model.fields[1](xy)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            updated = (recovered[:, 2] - z_on) / (z_off - z_on)
+        settled = np.allclose(updated, two_band, rtol=0.0, atol=1e-5, equal_nan=True)
+        two_band = updated
+        if settled:
+            break
+    return recovered
+
+
 def unwarp_nodes(
     nodes: np.ndarray,
     surface_mapping: dict,
@@ -121,6 +145,7 @@ def unwarp_nodes(
     forward residuals (`warp_nodes(x) ~= target`).
     Input nodes are assumed to be normalized warped coordinates and are
     denormalized using the provided ON/OFF SAC reference positions.
+    A mapping with extra surfaces is inverted through its piecewise depth.
     """
     prenormed_nodes, on_input_pts, off_input_pts, on_output_pts, off_output_pts = (
         _prepare_unwarp_inputs(
@@ -133,14 +158,31 @@ def unwarp_nodes(
         )
     )
 
+    model = None
+    if "extra_surfaces" in surface_mapping:
+        model = _DepthModel(surface_mapping, backward_compatible)
+    med_z_on, med_z_off = float(on_output_pts[0, 2]), float(off_output_pts[0, 2])
+
     if method == "local_ls":
         # Inverse pass: swap forward correspondences (flattened -> curved frame).
-        return local_ls_registration(
-            prenormed_nodes,
+        if model is None:
+            return local_ls_registration(
+                prenormed_nodes,
+                on_output_pts,
+                off_output_pts,
+                on_input_pts,
+                off_input_pts,
+            )
+        inverse_state = _build_local_ls_state(
             on_output_pts,
             off_output_pts,
             on_input_pts,
             off_input_pts,
+            window=5.0,
+            max_order=2,
+        )
+        return _unwarp_through_layers(
+            prenormed_nodes, model, inverse_state, med_z_on, med_z_off
         )
 
     if method != "optimize":
@@ -160,7 +202,12 @@ def unwarp_nodes(
         window=5.0,
         max_order=2,
     )
-    initial = _apply_local_ls_state(prenormed_nodes, inverse_state, warn=False)
+    if model is None:
+        initial = _apply_local_ls_state(prenormed_nodes, inverse_state, warn=False)
+    else:
+        initial = _unwarp_through_layers(
+            prenormed_nodes, model, inverse_state, med_z_on, med_z_off
+        )
 
     forward_state = _build_local_ls_state(
         on_input_pts,
@@ -190,6 +237,9 @@ def unwarp_nodes(
 
         def _residual(x: np.ndarray) -> np.ndarray:
             warped = _apply_local_ls_state(x[None, :], forward_state, warn=False)[0]
+            if model is not None:
+                depth = model.relative(x[None, :])[0]
+                warped[2] = med_z_on + depth * (med_z_off - med_z_on)
             return warped - target
 
         sol = least_squares(
