@@ -134,8 +134,10 @@ def load_cells(
 
     def read() -> Iterator[tuple]:
         for key in sorted(paths):
+            # the cells use nothing of the mesh, which only npz files carry
+            options = {"mesh": False} if paths[key].suffix.lower() == ".npz" else {}
             try:
-                skel = sk.io.load_skeleton(paths[key])
+                skel = sk.io.load_skeleton(paths[key], **options)
             except Exception as exc:
                 raise OSError(
                     f"cannot read {paths[key]}: {type(exc).__name__}: {exc}"

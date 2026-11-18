@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pywarper"
-version = "0.2.8"
+version = "0.2.9"
 description = "Conformal mapping-based warping of retinal morphologies."
 authors = []
 requires-python = ">=3.11.0"
@@ -14,7 +14,7 @@ dependencies = [
     "numpy>=2.2.0",
     "pygridfit>=0.2.1",
     "scipy>=1.15.0",
-    "skeliner>=0.4.0",
+    "skeliner>=0.4.1",
     "trimesh>=4.0",
 ]
 license = "GPL-3.0-or-later"
@@ -28,6 +28,9 @@ dev = [
     "pytest",
     "watermark>=2.5.0",
 ]
+
+[tool.uv.sources]
+skeliner = { git = "file:///Users/ziweih/Works/EW2/skeliner", branch = "validity" }
 
 [tool.ruff]
 line-length = 88

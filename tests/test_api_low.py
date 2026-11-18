@@ -19,6 +19,7 @@ from pywarper.warpers import (
     poly_basis_2d,
     warp_nodes,
     warp_skeleton,
+    z_slice_volumes,
 )
 
 
@@ -482,6 +483,49 @@ def test_volume_profiles_partition_skeliners_volume():
     assert np.isclose(
         one_bin["histogram"].sum(), sk.dx.volume(thin, include_soma=False), rtol=1e-12
     )
+
+
+def test_volume_profiles_hold_skeliners_volume_box_by_box():
+    """Each voxel layer along z and each xy bin of the volume profiles holds what
+    `sk.dx.volume` finds in the box of the whole grid's voxels that the layer or
+    the bin takes, a bin taking the columns `np.histogram2d` puts in it."""
+    skel = _two_dendrites()
+    skel.nodes[21:, 2] += 1.5  # one dendrite deeper, so the layers differ
+    _, grid = sk.dx.volume(skel, include_soma=False, return_details=True)
+    h, shape = grid["voxel_size"], np.asarray(grid["grid_shape"])
+    lo = np.asarray(grid["bbox_lo"], dtype=float)
+
+    def in_box(start, count):
+        start = lo + np.asarray(start) * h
+        # the box ends inside its last voxels, so that rounding cannot add one
+        end = start + (np.asarray(count) - 0.25) * h
+        return sk.dx.volume(skel, bbox=(start, end), voxel_size=h, include_soma=False)
+
+    per_layer = np.array([in_box((0, 0, k), (*shape[:2], 1)) for k in range(shape[2])])
+    held = np.flatnonzero(per_layer > 0)
+    volumes, z = z_slice_volumes(skel)
+    assert np.array_equal(volumes, per_layer[held])
+    assert np.allclose(z, lo[2] + (held + 0.5) * h, rtol=0, atol=1e-12)
+    assert held.size > 1 and not np.array_equal(volumes, volumes[::-1])
+
+    xy = get_xy_profile(skel, bin_size=5.0, measure="volume")
+    blocks = []
+    for axis, n_bins in enumerate(xy["n_bins"]):
+        first_edge, last_edge = xy["extents"][2 * axis : 2 * axis + 2]
+        edges = np.append(first_edge + np.arange(n_bins) * 5.0, last_edge)
+        centres = lo[axis] + (np.arange(shape[axis]) + 0.5) * h
+        inside = (centres >= edges[:-1, None]) & (centres < edges[1:, None])
+        inside[-1] |= centres == edges[-1]
+        blocks.append((inside.argmax(axis=1), inside.sum(axis=1)))
+    (x_first, x_count), (y_first, y_count) = blocks
+    expected = np.zeros_like(xy["histogram"])
+    for i, j in np.ndindex(expected.shape):
+        if x_count[i] and y_count[j]:
+            expected[i, j] = in_box(
+                (x_first[i], y_first[j], 0), (x_count[i], y_count[j], shape[2])
+            )
+    assert np.array_equal(xy["histogram"], expected)
+    assert np.isclose(expected.sum(), grid["filled_voxels"] * h**3, rtol=1e-12)
 
 
 def test_profiles_of_nothing_are_zero():

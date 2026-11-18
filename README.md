@@ -36,8 +36,9 @@ from pywarper import layers
 
 sacs = Path("/data/ew2/sacs")
 on = layers.load_cells(sacs / "sac-on", "{id}/skeleton.npz")
-off = layers.load_cells(sacs / "sac-off", "{id}/skeleton.npz",
-                        ids=Path("off_sacs.txt").read_text().split())
+off = layers.load_cells(
+    sacs / "sac-off", "{id}/skeleton.npz", ids=Path("off_sacs.txt").read_text().split()
+)
 
 bands = layers.fit_bands(on, off)
 extra = [layers.soma_layer("on_soma", on, bands)]

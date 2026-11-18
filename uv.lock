@@ -1252,7 +1252,7 @@ wheels = [
 
 [[package]]
 name = "pywarper"
-version = "0.2.8"
+version = "0.2.9"
 source = { editable = "." }
 dependencies = [
     { name = "alphashape" },
@@ -1282,7 +1282,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "scipy", specifier = ">=1.15.0" },
-    { name = "skeliner", specifier = ">=0.4.0" },
+    { name = "skeliner", git = "file:///Users/ziweih/Works/EW2/skeliner?branch=validity" },
     { name = "trimesh", specifier = ">=4.0" },
     { name = "watermark", marker = "extra == 'dev'", specifier = ">=2.5.0" },
 ]
@@ -1618,8 +1618,8 @@ wheels = [
 
 [[package]]
 name = "skeliner"
-version = "0.4.0"
-source = { registry = "https://pypi.org/simple" }
+version = "0.4.1"
+source = { git = "file:///Users/ziweih/Works/EW2/skeliner?branch=validity#71104d278801c86d961066949ddc1dc1286be90f" }
 dependencies = [
     { name = "matplotlib" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
@@ -1630,14 +1630,6 @@ dependencies = [
     { name = "shapely" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/82/79/019fbc73584604e6b6881ed76036716cc76fe4f7dfca783473cf3584dc98/skeliner-0.4.0.tar.gz", hash = "sha256:a6e765cb0ed416e42e094945875ab25b30c0195cc2428c4ea14c9fca887e4615", size = 701080, upload-time = "2026-11-12T16:21:37.183Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/a7/38fe298d3baf16409e8454819fae4fcf3d558b846384404dd8a85f07b0a2/skeliner-0.4.0-cp311-abi3-macosx_10_12_x86_64.whl", hash = "sha256:13192d5dd5c6192c58422a5a64513ff41619919f729dcdd142af20b583ad8947", size = 2374865, upload-time = "2026-11-12T16:21:29.65Z" },
-    { url = "https://files.pythonhosted.org/packages/cb/c0/832c9d56eb2b54830c4b0d3bb68a84e274632358d6f9ce1ab3538510fc70/skeliner-0.4.0-cp311-abi3-macosx_11_0_arm64.whl", hash = "sha256:51672cda28048879befa56b2e81c7b540958331ebe9126aa589f537461fc891c", size = 2261872, upload-time = "2026-11-12T16:21:31.258Z" },
-    { url = "https://files.pythonhosted.org/packages/87/f4/1d60e629a19b9c37dbf9d93de0e6f9d87555c2b465b523de54d25bc1afbe/skeliner-0.4.0-cp311-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:eae311dd4a2c1aaa594af963b9a5d238ed29a88f3001eab9ec0d0e232f8c0345", size = 2752372, upload-time = "2026-11-12T16:21:32.625Z" },
-    { url = "https://files.pythonhosted.org/packages/24/1a/2515805e9532a451c2961ea99c96014cecf45b8c841255fab34b767d1f51/skeliner-0.4.0-cp311-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a4e9184e836ff3b64120318019b9276efdfa5b9d4a0453f59ac19cc688371142", size = 2973547, upload-time = "2026-11-12T16:21:34.24Z" },
-    { url = "https://files.pythonhosted.org/packages/0d/60/33ed925f3e9bf0c1fcc7bda874898a3a929100e3ed30d8df5599f6aba753/skeliner-0.4.0-cp311-abi3-win_amd64.whl", hash = "sha256:4c55b06c0d09c05409ffd3635d691790f786969785e3ae8baba3039d6b4dbef1", size = 2392884, upload-time = "2026-11-12T16:21:35.742Z" },
 ]
 
 [[package]]

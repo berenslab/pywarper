@@ -416,6 +416,8 @@ def test_load_cells_reads_whatever_layout_the_pattern_names(tmp_path):
     )
     assert np.array_equal(in_memory.nodes, cells.nodes)
     assert np.array_equal(in_memory.cell, cells.cell)
+    assert np.array_equal(in_memory.soma, cells.soma, equal_nan=True)
+    assert np.array_equal(in_memory.soma_extent, cells.soma_extent, equal_nan=True)
 
     with pytest.raises(ValueError, match="more than one"):
         layers.Cells.merge(cells, same)

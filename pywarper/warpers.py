@@ -43,7 +43,6 @@ from scipy.ndimage import gaussian_filter
 from scipy.spatial import KDTree
 from scipy.special import i0
 from skeliner import Skeleton
-from skeliner._core import _bfs_parents
 
 from .surface import build_mapping, fit_sac_surface
 from .utils import resolve_conformal_jump, surface_lattice
@@ -1005,9 +1004,7 @@ def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
     lengths : (N,)  nonzero only at child nodes (each entry is edge length)
     mid     : (N,3) midpoints (same convention as before)
     """
-    parent = np.asarray(
-        _bfs_parents(skel.edges, len(skel.nodes), root=0), dtype=np.int64
-    )
+    parent = sk.dx.parents(skel)
     child = np.where(parent != -1)[0]  # nodes with a parent
 
     a = skel.nodes[child]  # child coords
@@ -1022,56 +1019,6 @@ def segment_lengths(skel: Skeleton) -> tuple[np.ndarray, np.ndarray]:
     lengths = np.zeros(len(skel.nodes), dtype=float)
     lengths[child] = L
     return lengths, mid
-
-
-def _volume_grid(
-    skel: Skeleton,
-    *,
-    voxel_size: float | None,
-    include_soma: bool,
-    radius_metric: str | None,
-) -> tuple[dict, dict]:
-    """
-    skeliner's voxel grid over the whole morphology, and the arguments that
-    give the same union of edges and soma on a box of that grid.
-
-    The grid is `sk.dx.volume`'s record of one call: ``voxel_size``,
-    ``bbox_lo``, ``grid_shape`` and ``filled_voxels``.
-    """
-    union = {
-        "radius_metric": radius_metric or skel.recommend_radius()[0],
-        "include_soma": include_soma,
-    }
-    _, grid = sk.dx.volume(skel, voxel_size=voxel_size, return_details=True, **union)
-    return grid, union
-
-
-def _filled_voxels(skel: Skeleton, grid: dict, union: dict, start, count) -> int:
-    """Filled voxels in the block of `grid` that starts at voxel `start` and
-    holds `count` voxels along each axis."""
-    start, count = np.asarray(start), np.asarray(count)
-    h = grid["voxel_size"]
-    lo = np.asarray(grid["bbox_lo"], dtype=float) + start * h
-    # the box ends inside its last voxels, past their centres, so that
-    # rounding cannot give it one voxel more
-    hi = lo + (count - 0.25) * h
-    _, block = sk.dx.volume(
-        skel, bbox=(lo, hi), voxel_size=h, return_details=True, **union
-    )
-    if block["voxel_size"] == h and tuple(block["grid_shape"]) == tuple(count):
-        return int(block["filled_voxels"])
-    # skeliner coarsens a box that holds more voxels than it takes in one grid
-    axis = int(np.argmax(count))
-    if count[axis] < 2:
-        raise RuntimeError("skeliner did not voxelize a box on the grid it was given.")
-    near, far = count.copy(), count.copy()
-    near[axis] = count[axis] // 2
-    far[axis] = count[axis] - near[axis]
-    beyond = start.copy()
-    beyond[axis] += near[axis]
-    return _filled_voxels(skel, grid, union, start, near) + _filled_voxels(
-        skel, grid, union, beyond, far
-    )
 
 
 def z_slice_volumes(
@@ -1091,49 +1038,39 @@ def z_slice_volumes(
     z : (K,) float
         The layers' centres.
     """
-    grid, union = _volume_grid(
+    union = sk.dx.volume_profiles(
         skel,
+        radius_metric=radius_metric,
         voxel_size=voxel_size,
         include_soma=include_soma,
-        radius_metric=radius_metric,
     )
-    h = grid["voxel_size"]
-    nx, ny, nz = grid["grid_shape"]
-    filled = np.array(
-        [_filled_voxels(skel, grid, union, (0, 0, k), (nx, ny, 1)) for k in range(nz)]
-    )
-    z = grid["bbox_lo"][2] + (np.arange(nz) + 0.5) * h
+    h = union["voxel_size"]
+    filled = np.asarray(union["filled_per_z"])
+    z = union["bbox_lo"][2] + (np.arange(filled.size) + 0.5) * h
     keep = filled > 0
     return filled[keep].astype(np.float64) * (h**3), z[keep]
 
 
-def _xy_bin_volumes(
-    skel: Skeleton, grid: dict, union: dict, x_edges: np.ndarray, y_edges: np.ndarray
+def _bin_columns(
+    columns: np.ndarray,
+    centres: tuple[np.ndarray, np.ndarray],
+    x_edges: np.ndarray,
+    y_edges: np.ndarray,
 ) -> np.ndarray:
-    """Union volume in each bin of an xy histogram: a column of voxels belongs
-    to the bin `np.histogram2d` would put its centre in."""
-    h = grid["voxel_size"]
-    nz = grid["grid_shape"][2]
-    spans = []
+    """Sum of the voxel columns `columns` ``(nx, ny)`` in each bin of an xy
+    histogram: a column belongs to the bin `np.histogram2d` would put its
+    centre in. `centres` are the columns' centres along x and along y."""
+    binned = np.asarray(columns, dtype=np.int64)
     for axis, edges in enumerate((x_edges, y_edges)):
-        centres = (
-            grid["bbox_lo"][axis] + (np.arange(grid["grid_shape"][axis]) + 0.5) * h
+        first = np.searchsorted(centres[axis], edges[:-1], side="left")
+        last = np.append(
+            first[1:], np.searchsorted(centres[axis], edges[-1], side="right")
         )
-        first = np.searchsorted(centres, edges[:-1], side="left")
-        last = np.append(first[1:], np.searchsorted(centres, edges[-1], side="right"))
-        spans.append((first, np.maximum(last, first)))
-    (x0, x1), (y0, y1) = spans
-    filled = np.zeros((len(x0), len(y0)))
-    for i in np.flatnonzero(x1 > x0):
-        for j in np.flatnonzero(y1 > y0):
-            filled[i, j] = _filled_voxels(
-                skel,
-                grid,
-                union,
-                (x0[i], y0[j], 0),
-                (x1[i] - x0[i], y1[j] - y0[j], nz),
-            )
-    return filled * (h**3)
+        before = [(0, 0), (0, 0)]
+        before[axis] = (1, 0)
+        running = np.pad(np.cumsum(binned, axis=axis), before)
+        binned = np.take(running, last, axis=axis) - np.take(running, first, axis=axis)
+    return binned
 
 
 def _xy_volume_histogram(
@@ -1148,19 +1085,24 @@ def _xy_volume_histogram(
     """Union volume per xy bin, the bins' edges along x and y, and the volume
     of the whole morphology. Without `extents` the window is the whole bins
     around the nodes and the filled voxel columns."""
-    grid, union = _volume_grid(
+    union = sk.dx.volume_profiles(
         skel,
+        radius_metric=radius_metric,
         voxel_size=voxel_size,
         include_soma=include_soma,
-        radius_metric=radius_metric,
     )
-    h = grid["voxel_size"]
-    total = float(grid["filled_voxels"]) * (h**3)
+    h = union["voxel_size"]
+    total = float(union["filled_voxels"]) * (h**3)
+    columns = np.asarray(union["filled_per_xy"])
+    shape = np.asarray(columns.shape)
+    corner = np.asarray(union["bbox_lo"][:2], dtype=float)
+    centres = tuple(corner[a] + (np.arange(shape[a]) + 0.5) * h for a in (0, 1))
 
     def histogram(lo, hi):
         x_edges = _edges_from_bin_size(lo[0], hi[0], bin_size)
         y_edges = _edges_from_bin_size(lo[1], hi[1], bin_size)
-        return _xy_bin_volumes(skel, grid, union, x_edges, y_edges), x_edges, y_edges
+        filled = _bin_columns(columns, centres, x_edges, y_edges)
+        return filled * (h**3), x_edges, y_edges
 
     if extents is not None:
         xmin, xmax, ymin, ymax = extents
@@ -1169,8 +1111,7 @@ def _xy_volume_histogram(
     # whole bins around every node and every voxel column of the grid ...
     nodes_lo = np.floor(skel.nodes[:, :2].min(axis=0) / bin_size)
     nodes_hi = np.ceil(skel.nodes[:, :2].max(axis=0) / bin_size)
-    shape = np.asarray(grid["grid_shape"][:2])
-    centre = np.asarray(grid["bbox_lo"][:2], dtype=float) + 0.5 * h
+    centre = corner + 0.5 * h
     low = np.minimum(np.floor(centre / bin_size), nodes_lo)
     high = np.maximum(np.ceil((centre + (shape - 1) * h) / bin_size), nodes_hi)
     hist, x_edges, y_edges = histogram(low * bin_size, high * bin_size)
@@ -1322,8 +1263,7 @@ def _orient_classify(
     so that orientation is evaluated at a consistent spatial scale.  Tip
     detection always uses the full branch length, not the sub-segment length.
     """
-    raw_parent = _bfs_parents(skel.edges, len(skel.nodes), root=0)
-    parent = np.asarray(raw_parent, dtype=np.int64)
+    parent = sk.dx.parents(skel)
     xyz = np.asarray(skel.nodes, dtype=np.float64)
     N = len(xyz)
 
@@ -1429,8 +1369,8 @@ def get_z_profile(
 
     Notes
     -----
-    * volume is skeliner's voxel union (`sk.dx.volume`): branch junctions and
-      soma contacts are **not counted twice**.
+    * volume is skeliner's voxel union (`sk.dx.volume_profiles`): branch
+      junctions and soma contacts are **not counted twice**.
     * 'include_soma' defaults to False to match the 'length' convention
       (edges only). Set True if you want soma membrane/volume included.
     * For stable plots, keep bin_size >= voxel_size (if you set voxel_size).
@@ -1569,9 +1509,7 @@ def get_xy_profile(
     measure:
         "length" – dendritic cable length per bin (histogram -> Gaussian smooth).
         "volume" – **union-correct** morphology volume per bin (voxel union),
-                   integrated along z, then binned in x-y. Every bin that
-                   holds voxels is one call into skeliner: many small bins
-                   take long.
+                   integrated along z, then binned in x-y.
 
     Returns
     -------
