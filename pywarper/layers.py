@@ -13,7 +13,7 @@ from typing import Iterable, Iterator, Mapping
 import numpy as np
 import skeliner as sk
 from scipy.interpolate import RegularGridInterpolator
-from scipy.ndimage import binary_fill_holes
+from scipy.ndimage import binary_fill_holes, gaussian_filter1d
 from scipy.spatial import KDTree
 
 from .surface import build_mapping, fit_sac_surface, map_distortion
@@ -45,6 +45,9 @@ BOUNDS = (0.0, 1311.0, 0.0, 1311.0)
 VOLUME_Z = (0.042, 82.551)
 #: Flattened depth of the ON and of the OFF band.
 ON_DEPTH, OFF_DEPTH = 0.0, 12.0
+# bin and Gaussian smoothing of the depth profile that locates a stratum,
+# in flattened depth
+_PROFILE_BIN, _PROFILE_SMOOTH = 0.1, 0.25
 
 _NM = {"nm", "nanometer", "nanometre"}
 _UM = {"um", "µm", "micron", "micrometer", "micrometre"}
@@ -573,12 +576,41 @@ def _field_summary(field_: np.ndarray, observed: np.ndarray, bands: Bands) -> di
     }
 
 
+def _stratum(relative: np.ndarray) -> tuple[float, float]:
+    """Peak of the nodes' depth profile and half its width at half maximum, in
+    flattened depth (ON 0, OFF 12)."""
+    depth = _flat(np.asarray(relative, dtype=float))
+    lo, hi = np.percentile(depth, [0.1, 99.9])
+    edges = np.arange(np.floor(lo), np.ceil(hi) + 2 * _PROFILE_BIN, _PROFILE_BIN)
+    counts, edges = np.histogram(depth, edges)
+    centre = 0.5 * (edges[:-1] + edges[1:])
+    profile = gaussian_filter1d(counts.astype(float), _PROFILE_SMOOTH / _PROFILE_BIN)
+    peak = int(np.argmax(profile))
+    half = profile[peak] / 2.0
+    left = peak
+    while left > 0 and profile[left - 1] >= half:
+        left -= 1
+    right = peak
+    while right < len(profile) - 1 and profile[right + 1] >= half:
+        right += 1
+
+    def crossing(inside: int, outside: int) -> float:
+        """Where the profile falls through half its peak, between two bins."""
+        if not 0 <= outside < len(profile):
+            return float(centre[inside])
+        a, b = profile[inside], profile[outside]
+        return float(
+            centre[inside] + (centre[outside] - centre[inside]) * (a - half) / (a - b)
+        )
+
+    width = crossing(right, right + 1) - crossing(left, left - 1)
+    return float(centre[peak]), width / 2.0
+
+
 def stratum_layer(
     name: str,
     cells: Cells,
     bands: Bands,
-    depth: float,
-    half_width: float,
     *,
     passes: int = 2,
     smoothness: float = 15.0,
@@ -586,11 +618,15 @@ def stratum_layer(
     clip_margin: float = 1.5,
     neighbours: int = 64,
 ) -> Layer:
-    """A layer through the stratum `cells` form near flattened `depth` (ON 0, OFF 12).
-    Pass one takes nodes within twice `half_width` of `depth`, later passes those
-    within `half_width` of the layer so far; it lands at its columns' median depth."""
+    """A layer through the stratum `cells` form, for a type that stratifies in a
+    narrow sheet. The stratum is found in the cells' own depth profile under the
+    two bands: its peak, and its half width at half maximum. Pass one takes nodes
+    within twice that half width of the peak, later passes those within the half
+    width of the layer so far; the layer lands at its columns' median depth."""
     if passes < 1:
         raise ValueError("passes must be at least 1.")
+    if len(cells.nodes) == 0:
+        raise ValueError(f"layer {name!r}: the cells have no nodes.")
     scale = OFF_DEPTH - ON_DEPTH
     xg, yg = _lattice(bands.bounds, bands.spacing)
     xx, yy = np.meshgrid(xg, yg, indexing="ij")
@@ -599,6 +635,7 @@ def stratum_layer(
         _read(bands.off.height, xx.ravel(), yy.ravel()).reshape(xx.shape) - column_on
     )
     relative, _ = _relative(cells.nodes, bands)
+    depth, half_width = _stratum(relative)
     centre = np.full(len(relative), (depth - ON_DEPTH) / scale)
     width = 2.0 * half_width / scale
     for _ in range(passes):
@@ -609,8 +646,9 @@ def stratum_layer(
         )
         if not observed.any():
             raise ValueError(
-                f"no column holds layer {name!r}: these cells have no stratum "
-                f"near depth {depth}."
+                f"no column holds layer {name!r}: wherever its stratum (depth "
+                f"{depth:.1f}) lies, a face of the volume cuts it or too few "
+                "nodes are there."
             )
         column_depth = (stats["median"] - column_on) / column_gap
         field_ = _bounded_field(
@@ -631,14 +669,14 @@ def stratum_layer(
     summary = {
         "kind": "stratum",
         "cells": len(cells),
+        "profile_peak": depth,
+        "profile_half_width": half_width,
         "nodes_in_window": int(inside.sum()),
         "columns_observed": int(observed.sum()),
         "columns_cut": int(cut.sum()),
         "columns_thin": int(thin.sum()),
         "typical_nodes": typical,
         "settings": {
-            "depth": depth,
-            "half_width": half_width,
             "passes": passes,
             "smoothness": smoothness,
             "min_fill": min_fill,
@@ -848,7 +886,7 @@ def cross_validate(
             _read(layer.height, held.nodes[:, 0], held.nodes[:, 1])
             - _read(bands.on.height, held.nodes[:, 0], held.nodes[:, 1])
         ) / gap
-        width = settings["half_width"] / (OFF_DEPTH - ON_DEPTH)
+        width = layer.summary["profile_half_width"] / (OFF_DEPTH - ON_DEPTH)
         xg, yg = _lattice(bands.bounds, bands.spacing)
         xx, yy = np.meshgrid(xg, yg, indexing="ij")
         stats = _column_stats(

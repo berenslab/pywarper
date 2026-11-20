@@ -176,9 +176,7 @@ def test_stratum_layer_follows_a_drifting_layer(cut):
     truth = drifting(GX, GY)
     kept = {}
     for passes in (1, 2):
-        layer = layers.stratum_layer(
-            "deep", deep, bands, depth=-5.0, half_width=2.0, passes=passes
-        )
+        layer = layers.stratum_layer("deep", deep, bands, passes=passes)
         where = bands.tissue & layer.observed & (R < 100)
         kept[passes] = np.polyfit(
             (truth - bands.on.height)[where], (layer.height - bands.on.height)[where], 1
@@ -188,9 +186,28 @@ def test_stratum_layer_follows_a_drifting_layer(cut):
     assert layer.observed[R < 100].all()
     assert layer.depth == pytest.approx(-5.0, abs=0.2)
     assert layer.summary["kind"] == "stratum" and layer.summary["cells"] == 40
+    assert layer.summary["profile_peak"] == pytest.approx(-5.0, abs=0.3)
 
-    with pytest.raises(ValueError, match="no stratum near depth"):
-        layers.stratum_layer("none", deep, bands, depth=-40.0, half_width=1.0)
+    with pytest.raises(ValueError, match="a face of the volume cuts it"):
+        layers.stratum_layer("cut", deep, bands, clip_margin=TOP)
+
+
+def flat_stratum(x, y):
+    """A layer at flattened depth -5 everywhere."""
+    return on_height(x, y) - 5.0 * (off_height(x, y) - on_height(x, y)) / 12.0
+
+
+def test_stratum_layer_finds_its_stratum_in_the_cells_depth_profile(cut):
+    bands, _, _ = cut
+    flat = cells_on(flat_stratum, 60_000, 7, top=TOP)
+    layer = layers.stratum_layer("flat", flat, bands)
+    scatter = np.hypot(1.0, layers._PROFILE_SMOOTH)  # the nodes' 1 um, smoothed
+    hwhm = np.sqrt(2.0 * np.log(2.0)) * scatter
+    assert layer.summary["profile_peak"] == pytest.approx(-5.0, abs=0.1)
+    assert layer.summary["profile_half_width"] == pytest.approx(hwhm, abs=0.1)
+    assert layer.depth == pytest.approx(-5.0, abs=0.1)
+    with pytest.raises(ValueError, match="no nodes"):
+        layers.stratum_layer("empty", flat.subset(np.zeros(len(flat), bool)), bands)
 
 
 def outer(x, y):
@@ -199,9 +216,7 @@ def outer(x, y):
 
 def test_stratum_cut_by_a_face_is_pinned_where_it_is_not_seen(cut):
     bands, _, _ = cut
-    layer = layers.stratum_layer(
-        "outer", cells_on(outer, 60_000, 4, top=TOP), bands, depth=18.0, half_width=2.0
-    )
+    layer = layers.stratum_layer("outer", cells_on(outer, 60_000, 4, top=TOP), bands)
     away = layer.height - outer(GX, GY)
     assert layer.observed[R < 50].all()
     assert not layer.observed[(R > 75) & bands.tissue].any()
@@ -269,7 +284,7 @@ def test_soma_layer_is_sampled_by_place():
 def test_cross_validate_scores_a_stratum_on_held_out_cells(cut):
     bands, _, _ = cut
     deep = cells_on(drifting, 60_000, 3, top=TOP)
-    scored = layers.cross_validate("stratum", deep, bands, depth=-5.0, half_width=2.0)
+    scored = layers.cross_validate("stratum", deep, bands)
     assert scored["level"] == pytest.approx(-5.0, abs=0.2)
     assert scored["bands"]["depth_sd"] > 1.0  # the drift, in flattened depth
     assert scored["layer"]["depth_sd"] < 0.3
@@ -293,16 +308,8 @@ def test_check_cells_marks_the_cell_that_is_off_its_layer(cut):
 
 def test_map_carries_the_layers_through_a_warp_and_a_file(cut, tmp_path):
     bands, _, _ = cut
-    deep = layers.stratum_layer(
-        "deep",
-        cells_on(drifting, 60_000, 3, top=TOP),
-        bands,
-        depth=-5.0,
-        half_width=2.0,
-    )
-    far = layers.stratum_layer(
-        "outer", cells_on(outer, 60_000, 4, top=TOP), bands, depth=18.0, half_width=2.0
-    )
+    deep = layers.stratum_layer("deep", cells_on(drifting, 60_000, 3, top=TOP), bands)
+    far = layers.stratum_layer("outer", cells_on(outer, 60_000, 4, top=TOP), bands)
     mapping = layers.build_map(bands, [deep, far], conformal_jump=2)
     assert mapping["provenance"]["out_of_order_share_of_tissue"] == {
         "deep": 0.0,
