@@ -24,4 +24,4 @@ pip install -e pywarper
 
 ## Usage
 
-See [example notebooks](https://github.com/berenslab/pywarper/blob/main/notebooks/) for usage. 
+See [example notebooks](https://github.com/berenslab/pywarper/blob/main/notebooks/) for usage.
