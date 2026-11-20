@@ -653,3 +653,25 @@ def test_two_bands_share_one_analysis_of_their_system():
 
     mapped(on, shared, grid=idx[::2])
     assert shared.analyses == 2
+
+
+def test_a_band_whose_system_cancels_to_zeros_shares_the_analysis():
+    """A flat band's AᵀA has entries that cancel to exactly 0.0, which sparse
+    products drop; held on the structural pattern it still shares one analysis."""
+    n = 40
+    idx = np.arange(n)
+    x, y = np.meshgrid(idx, idx, indexing="ij")
+    curved = 10.0 + 2.0 * np.sin(x / 9.0) + np.cos(y / 11.0)
+    flat = np.full((n, n), 10.0)
+
+    def mapped(surface, solver=None):
+        return conformal_map_indep_fixed_diagonals(
+            60.0, 60.0, idx, idx, surface, solver=solver
+        )
+
+    for first, second in ((curved, flat), (flat, curved)):
+        shared = CholeskySolver()
+        together = [mapped(first, shared), mapped(second, shared)]
+        assert shared.analyses == 1
+        assert np.array_equal(together[0], mapped(first))
+        assert np.array_equal(together[1], mapped(second))

@@ -623,38 +623,44 @@ def assign_local_coordinates(triangles: np.ndarray) -> tuple[np.ndarray, ...]:
 
 class CholeskySolver:
     """
-    Sparse Cholesky solves that keep the analysis of the last matrix.
+    Least-squares solves by the normal equations that keep the analysis of the
+    last design matrix.
 
-    A matrix with the same sparsity pattern as the one before it is factorized
-    against that analysis, which is most of a factorization's cost; any other
-    matrix is analyzed afresh. `analyses` counts those.
+    hea factorizes AᵀA from A itself (``sym_kind="col"``), on the pattern A's
+    structure gives, so a design with the structure of the one before it is
+    refactorized against that analysis; any other is analyzed afresh. `analyses`
+    counts those.
     """
 
     def __init__(self) -> None:
         self.analyses = 0
         self._factor = None
-        self._pattern: tuple[np.ndarray, np.ndarray] | None = None
+        self._structure: tuple | None = None
 
-    def solve(self, matrix, right: np.ndarray) -> np.ndarray:
-        """Solve ``matrix @ x = right`` for a symmetric positive definite CSC
-        `matrix`."""
-        # two matrices have one pattern when their sorted indices agree
-        matrix.sort_indices()
-        same = self._pattern is not None and all(
-            np.array_equal(kept, new)
-            for kept, new in zip(self._pattern, (matrix.indptr, matrix.indices))
+    def solve_normal(self, design, right: np.ndarray) -> np.ndarray:
+        """Least-squares solution of ``design @ x = right``."""
+        design = design.tocsc()
+        design.sort_indices()
+        same = self._structure is not None and (
+            self._structure[0] == design.shape
+            and np.array_equal(self._structure[1], design.indptr)
+            and np.array_equal(self._structure[2], design.indices)
         )
         if same:
-            self._factor.factorize(matrix)
+            self._factor.factorize(design)
         else:
             # the old factor goes before the new one is built
-            self._factor = self._pattern = None
+            self._factor = self._structure = None
             # order="amd": a system is factorized once or twice, so the default
             # "best" pays METIS's ordering cost up front and never amortizes it.
-            self._factor = cho_factor(matrix, order="amd")
-            self._pattern = (matrix.indptr.copy(), matrix.indices.copy())
+            self._factor = cho_factor(design, order="amd", sym_kind="col")
+            self._structure = (
+                design.shape,
+                design.indptr.copy(),
+                design.indices.copy(),
+            )
             self.analyses += 1
-        return self._factor.solve(right)
+        return self._factor.solve(design.T @ right)
 
 
 def conformal_map_indep_fixed_diagonals(
@@ -792,9 +798,7 @@ def conformal_map_indep_fixed_diagonals(
 
         # AtA is symmetric positive definite, so a sparse Cholesky applies and is
         # several times faster than the general LU of scipy's spsolve.
-        AtA = (A.T @ A).tocsc()
-        Atb = A.T @ b
-        sol = solver.solve(AtA, Atb)
+        sol = solver.solve_normal(A, b)
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
