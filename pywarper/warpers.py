@@ -439,8 +439,7 @@ def normalize_nodes(
         Desired position of the ON SAC surface in the normalized space (µm).
     off_sac_pos : float, default=12.0
         Desired position of the OFF SAC surface in the normalized space (µm).
-    z_res : float, default=1.0
-        Spatial resolution along z (µm / voxel) after warping.
+
     Returns
     -------
     np.ndarray
@@ -750,63 +749,53 @@ def warp_skeleton(
     verbose: bool = False,
 ) -> Skeleton:
     """
-    Applies a local surface flattening (warp) to a neuronal skeleton using the results
-    of previously computed surface mappings.
+    Flatten a skeleton with a surface mapping and profile the result.
+
+    Every node is moved by `warp_nodes`; its z is then normalized so that the ON
+    band lands at `on_sac_pos` and the OFF band at `off_sac_pos`, and the nodes
+    are multiplied by `voxel_resolution`.
 
     Parameters
     ----------
-    nodes : np.ndarray
-        (N, 3) array of [x, y, z] coordinates for the skeleton to be warped.
-    edges : np.ndarray
-        (E, 2) array of indices defining connectivity between nodes.
-    radii : np.ndarray
-        (N,) array of radii corresponding to each node.
+    skel : Skeleton
+        The skeleton in the volume's frame.
     surface_mapping : dict
-        Dictionary containing keys:
-          - "mapped_min_positions" : np.ndarray
-              (X*Y, 2) mapped coordinates for one surface band (e.g., "min" band).
-          - "mapped_max_positions" : np.ndarray
-              (X*Y, 2) mapped coordinates for the other surface band (e.g., "max" band).
-          - "thisVZminmesh" : np.ndarray
-              (X, Y) mesh representing the first surface (“min” band) in 3D space.
-          - "thisVZmaxmesh" : np.ndarray
-              (X, Y) mesh representing the second surface (“max” band) in 3D space.
-          - "thisx" : np.ndarray
-              1D array of x-indices (possibly downsampled) used during mapping.
-          - "thisy" : np.ndarray
-              1D array of y-indices (possibly downsampled) used during mapping.
-    conformal_jump : int, default=1
-        Step size used in the conformal mapping (downsampling factor).
+        Output of `pywarper.surface.build_mapping`.
+    voxel_resolution : float or list of 3 floats, default=[1, 1, 1]
+        Multiplies the flattened nodes, e.g. to turn voxels into µm.
+    on_sac_pos, off_sac_pos : float, default=0.0 and 12.0
+        Where the ON and the OFF band land in the output's z.
+    z_profile_extent, z_profile_bin_size, z_profile_hdr_mass, z_profile_include_soma, z_profile_voxel_size
+        `extent`, `bin_size`, `hdr_mass`, `include_soma` and `voxel_size` of
+        `get_z_profile`.
+    xy_profile_extents, xy_profile_bin_size, xy_profile_smooth, xy_profile_include_soma, xy_profile_voxel_size
+        `extents`, `bin_size`, `smooth`, `include_soma` and `voxel_size` of
+        `get_xy_profile`.
+    radius_metric : str, optional
+        Passed to both profiles.
+    skeleton_nodes_scale : float, default=1.0
+        Multiplies the nodes into the surfaces' units before the warp; undone
+        after it.
+    conformal_jump : int, optional
+        Lattice step of the mapping; read from the mapping when None.
+    backward_compatible : bool, default=False
+        The surfaces' grid starts at 1 instead of 0.
     verbose : bool, default=False
-        If True, prints timing and progress information.
+        Print timing.
 
     Returns
     -------
-    dict
-        Dictionary containing:
-          - "nodes": np.ndarray
-              (N, 3) warped [x, y, z] coordinates after applying local registration.
-          - "edges": np.ndarray
-              (E, 2) connectivity array (passed through unchanged).
-          - "radii": np.ndarray
-              (N,) radii array (passed through unchanged).
-          - "medVZmin": float
-              Median z-value of the “min” surface mesh within the region of interest.
-          - "medVZmax": float
-              Median z-value of the “max” surface mesh within the region of interest.
-
-    Notes
-    -----
-    1. The function extracts a subregion of the surfaces according to thisx/thisy and
-       conformal_jump, matching the flattening step used in the mapping.
-    2. Each node in `nodes` is then warped via local least-squares registration,
-       referencing top (min) and bottom (max) surfaces.
-    3. The median z-values (medVZmin, medVZmax) are recorded, which often serve as
-       reference planes in further analyses.
-    4. When the mapping carries the volume's z-range or band support masks,
-       ``extra["coverage"]`` holds `node_coverage`'s record for every node, plus
-       ``depth``: the depth range the volume covers, in the output's z units.
-       `get_coverage` summarises it per skeleton.
+    Skeleton
+        The flattened skeleton, its soma centred on the first node. ``extra``
+        holds ``prenormed_nodes`` (warped, before normalization, times
+        `voxel_resolution`), ``med_z_on`` and ``med_z_off`` (the bands' median
+        heights in the surfaces' units), ``voxel_resolution``,
+        ``skeleton_nodes_scale``, and ``z_profiles`` and ``xy_profiles``, each
+        keyed by ``"length"`` and ``"volume"``. When the mapping carries the
+        volume's faces or band support masks, ``extra["coverage"]`` holds
+        `node_coverage`'s record for every node plus ``depth``, the depth range
+        the volume covers in the output's z units; `get_coverage` summarises it
+        per skeleton.
     """
 
     nodes = (
