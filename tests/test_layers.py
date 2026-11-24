@@ -13,7 +13,7 @@ BOUNDS = (0.0, SIZE, 0.0, SIZE)
 RADIUS = 110.0  # the tissue is a disc of this radius around the map's centre
 GX, GY = np.meshgrid(np.arange(SIZE), np.arange(SIZE), indexing="ij")
 R = np.hypot(GX - 120.0, GY - 120.0)
-TOP = 50.0  # a top face that removes the OFF band beyond r of about 85
+TOP = 50.0  # a top bound that removes the OFF band beyond r of about 85
 
 
 def on_height(x, y):
@@ -79,7 +79,7 @@ def cut():
     return bands, on, off
 
 
-def test_bands_follow_the_cells_and_fill_what_a_face_removes(cut):
+def test_bands_follow_the_cells_and_fill_what_a_bound_removes(cut):
     bands, _, _ = cut
     inside, hidden = R < 70, (R > 97) & (R < 106)
     assert rms((bands.on.height - on_height(GX, GY))[inside]) < 0.15
@@ -99,12 +99,12 @@ def test_bands_follow_the_cells_and_fill_what_a_face_removes(cut):
     assert 10.5 < gap.min() and gap.max() < 13.5
 
 
-def test_columns_left_under_a_face_do_not_count(cut):
+def test_columns_left_under_a_bound_do_not_count(cut):
     bands, _, off = cut
     xg, yg = _lattice(BOUNDS, bands.spacing)
     xx, yy = np.meshgrid(xg, yg, indexing="ij")
     stats = _column_stats(off.nodes, xg, yg, bands.spacing)
-    # leftovers under the face: a median well clear of the face, yet far off the band
+    # leftovers under the bound: a median well clear of it, yet far off the band
     stray = (
         (stats["count"] > 0)
         & (stats["median"] <= TOP - 3.0)
@@ -113,7 +113,7 @@ def test_columns_left_under_a_face_do_not_count(cut):
     assert stray.sum() > 20
     assert not (stray & _observed(stats, (0.0, TOP), 1.5, 0.1)[0]).any()
 
-    # so the band filled in under the face matches the one seen without a face
+    # so the band filled in under the bound matches the one seen without it
     whole = layers.fit_bands(
         cells_on(on_height, 120_000, 1),
         cells_on(off_height, 120_000, 2),
@@ -188,7 +188,7 @@ def test_stratum_layer_follows_a_drifting_layer(cut):
     assert layer.summary["kind"] == "stratum" and layer.summary["cells"] == 40
     assert layer.summary["profile_peak"] == pytest.approx(-5.0, abs=0.3)
 
-    with pytest.raises(ValueError, match="a face of the volume cuts it"):
+    with pytest.raises(ValueError, match="a z bound of the volume cuts it off"):
         layers.stratum_layer("cut", deep, bands, clip_margin=TOP)
 
 
@@ -214,7 +214,7 @@ def outer(x, y):
     return off_height(x, y) + 6.0
 
 
-def test_stratum_cut_by_a_face_is_pinned_where_it_is_not_seen(cut):
+def test_stratum_cut_off_by_a_bound_is_pinned_where_it_is_not_seen(cut):
     bands, _, _ = cut
     layer = layers.stratum_layer("outer", cells_on(outer, 60_000, 4, top=TOP), bands)
     away = layer.height - outer(GX, GY)
@@ -228,7 +228,8 @@ def test_stratum_cut_by_a_face_is_pinned_where_it_is_not_seen(cut):
 
 
 def somata_under(top, seed=5, n=1500):
-    """Somata 8 +- 1.5 um above the OFF band, 3 um tall; one cut by the face is lost."""
+    """Somata 8 +- 1.5 um above the OFF band, 3 um tall; one cut off by the top
+    bound is lost."""
     rng = np.random.default_rng(seed)
     r = RADIUS * np.sqrt(rng.random(n))
     a = rng.uniform(0, 2 * np.pi, n)
@@ -265,7 +266,7 @@ def test_soma_layer_is_sampled_by_place():
     assert layer.depth == pytest.approx(12.0 * (1.0 + 8.0 / 12.0), abs=0.4)
     assert layer.observed[R < 65].all() and not layer.observed[R > 85].any()
 
-    # where the face leaves room for only some somata, the survivors are the low
+    # where the top bound leaves room for only some somata, the survivors are the low
     # ones; the layer keeps to what it saw where every soma fits
     short = (r > 82) & (r < 97)
     assert np.median(offset[short & whole]) < 7.6
@@ -326,7 +327,7 @@ def test_map_carries_the_layers_through_a_warp_and_a_file(cut, tmp_path):
         depth = normalize_nodes(warped, med_on, med_off)[:, 2]
         assert np.allclose(depth, layer.depth, atol=1e-6)
 
-    # x = 210 lies where the face hides both the OFF band and the outer stratum
+    # x = 210 lies where the top bound hides both the OFF band and the outer stratum
     coverage = node_coverage(
         np.array([[120.0, 120.0, 30.0], [210.0, 120.0, 40.0]]), mapping
     )

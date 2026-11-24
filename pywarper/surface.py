@@ -1092,8 +1092,8 @@ def build_mapping(
         With 8 or 16 the pins of both bands are placed by one shared
         `anchor_pin_map`, so a tilted plane is flattened exactly.
     volume_z : (float or None, float or None), optional
-        z of the imaged volume's two faces, ``(z_min, z_max)``, in the surfaces'
-        units; None for a face that is unknown. Lets a warp record, per node, how
+        the imaged volume's z bounds, ``(z_min, z_max)``, in the surfaces'
+        units; None for a bound that is unknown. Lets a warp record, per node, how
         much of its column the volume actually covers.
     on_support, off_support : np.ndarray of bool, optional
         Same shape as the surfaces; True where that band was observed rather than
@@ -1124,21 +1124,21 @@ def build_mapping(
         ``on_sac_surface`` / ``off_sac_surface``
             The original (subsampled) height fields kept for debugging or visualisation.
         ``volume_z``, ``on_support``, ``off_support``
-            Only when given: the face z (NaN where unknown) and the support masks.
+            Only when given: the z bounds (NaN where unknown) and the support masks.
         ``extra_surface_names``, ``extra_surfaces``, ``extra_surface_depths``
             Only with `extra_surfaces`: names, (K, X, Y) heights, (K,) depths.
         ``extra_surface_supports``
             Only when an extra surface came with its mask: (K, X, Y), all True
             for a layer given without one.
     """
-    faces = None
+    z_bounds = None
     if volume_z is not None:
-        faces = np.array(
+        z_bounds = np.array(
             [np.nan if v is None else float(v) for v in volume_z], dtype=float
         )
-        if faces.shape != (2,):
+        if z_bounds.shape != (2,):
             raise ValueError("volume_z must be (z_min, z_max).")
-        if np.isfinite(faces).all() and faces[0] >= faces[1]:
+        if np.isfinite(z_bounds).all() and z_bounds[0] >= z_bounds[1]:
             raise ValueError("volume_z must be (z_min, z_max) with z_min < z_max.")
     supports = {}
     for name, support in (("on_support", on_support), ("off_support", off_support)):
@@ -1304,8 +1304,8 @@ def build_mapping(
             "pywarper_version": _PYWARPER_VERSION,
         },
     }
-    if faces is not None:
-        mapping["volume_z"] = faces
+    if z_bounds is not None:
+        mapping["volume_z"] = z_bounds
     mapping.update(supports)
     mapping.update(extras)
     return mapping

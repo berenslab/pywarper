@@ -166,7 +166,7 @@ def test_renormalize_matches_warp_skeleton_units():
     assert np.allclose(unit.nodes[:, :2], warped.nodes[:, :2])
     assert np.allclose(unit.nodes[:, 2], warped.nodes[:, 2] / 12.0)
 
-    # faces at z = 5 and 22 around bands 10 apart, in the output's z units
+    # z bounds at 5 and 22 around bands 10 apart, in the output's z units
     assert np.allclose(warped.extra["coverage"]["depth"], [-6.0 / 4, 14.4 / 4])
     assert np.allclose(
         unit.extra["coverage"]["depth"], warped.extra["coverage"]["depth"] / 12.0

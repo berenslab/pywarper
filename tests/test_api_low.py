@@ -259,7 +259,7 @@ def test_coverage_records_volume_faces_and_unobserved_band():
     assert np.isfinite(warped.extra["z_profiles"]["length"]["distribution"]).all()
 
     coverage = warped.extra["coverage"]
-    # faces at z = 5 and 22 around bands 10 apart, ON at 0 and OFF at 12
+    # z bounds at 5 and 22 around bands 10 apart, ON at 0 and OFF at 12
     assert np.allclose(coverage["depth"], [-6.0, 14.4])
     assert np.array_equal(coverage["off_support"], skel.nodes[:, 0] < 20)
     assert "on_support" not in coverage

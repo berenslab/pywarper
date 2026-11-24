@@ -41,7 +41,7 @@ __all__ = [
 
 #: The EW2 volume in x and y, um.
 BOUNDS = (0.0, 1311.0, 0.0, 1311.0)
-#: The EW2 volume's bottom and top face, um.
+#: The EW2 volume's bottom and top bound in z, um.
 VOLUME_Z = (0.042, 82.551)
 #: Flattened depth of the ON and of the OFF band.
 ON_DEPTH, OFF_DEPTH = 0.0, 12.0
@@ -372,7 +372,7 @@ def _column_stats(
 def _observed(
     stats: dict, volume_z: tuple, margin: float, min_fill: float
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-    """Columns that hold the layer, those a face cuts, those too thin, and the
+    """Columns that hold the layer, those a z bound cuts off, those too thin, and the
     typical node count of a column."""
     count = stats["count"]
     typical = float(np.median(count[count > 0])) if (count > 0).any() else 0.0
@@ -471,7 +471,7 @@ def fit_bands(
 ) -> Bands:
     """The two SAC bands over the map: ON fitted, OFF = ON plus a gap field.
     A column holds a band with `min_fill` of its typical node count and deciles
-    `clip_margin` clear of the faces; missing gaps take the `neighbours` nearest."""
+    `clip_margin` clear of the z bounds; missing gaps take the `neighbours` nearest."""
     if set(on.ids.tolist()) & set(off.ids.tolist()):
         raise ValueError("a cell is among both the ON and the OFF cells.")
     xg, yg = _lattice(bounds, spacing)
@@ -647,7 +647,7 @@ def stratum_layer(
         if not observed.any():
             raise ValueError(
                 f"no column holds layer {name!r}: wherever its stratum (depth "
-                f"{depth:.1f}) lies, a face of the volume cuts it or too few "
+                f"{depth:.1f}) lies, a z bound of the volume cuts it off or too few "
                 "nodes are there."
             )
         column_depth = (stats["median"] - column_on) / column_gap
@@ -707,8 +707,8 @@ def _on_level(relative: np.ndarray) -> np.ndarray:
 
 
 def _room(level: float, bands: Bands, x: np.ndarray, y: np.ndarray) -> tuple:
-    """Distance from a layer at two-band depth `level` down to the bottom face and
-    up to the top face, inf for an unknown face."""
+    """Distance from a layer at two-band depth `level` down to the bottom bound and
+    up to the top bound, inf for an unknown bound."""
     z_on = _read(bands.on.height, x, y)
     z = z_on + level * (_read(bands.off.height, x, y) - z_on)
     low, high = bands.volume_z
@@ -728,8 +728,8 @@ def soma_layer(
     clip_margin: float = 1.5,
 ) -> Layer:
     """A layer through the somata of `cells`, one sample per cell.
-    Only places where the layer's spread plus a soma's half-height clears both faces
-    by `clip_margin` count; the field is pinned beyond `reach` um from those samples."""
+    Only places where the layer's spread plus a soma's half-height clears both z
+    bounds by `clip_margin` count; the field is pinned `reach` um beyond the samples."""
     has = np.isfinite(cells.soma).all(axis=1) & np.isfinite(cells.soma_extent)
     if has.sum() < 3:
         raise ValueError(f"layer {name!r} needs at least three cells with a soma.")
@@ -1093,7 +1093,7 @@ def report(
         )
         if "columns_cut" in s:
             line += (
-                f"; {s['columns_cut']:,} columns cut by a face, "
+                f"; {s['columns_cut']:,} columns cut off at a z bound, "
                 f"{s['columns_thin']:,} too thin"
             )
         if "samples_used" in s:

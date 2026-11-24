@@ -670,17 +670,17 @@ def node_coverage(
         ``depth_rel`` : (N, 2)
             The depth range the volume covers in each node's column, lowest
             first, in relative depth (0 at the ON band, 1 at the OFF band).
-            ±inf on a side whose face is unknown.
+            ±inf on a side whose bound is unknown.
         ``on_support``, ``off_support`` : (N,) bool
             Whether that band was observed in the node's column.
         ``extra_support`` : (N, K) bool, ``extra_names`` : (K,)
             Whether each extra layer was observed in the node's column, and the
             layers' names.
     """
-    has_faces = "volume_z" in surface_mapping
+    has_bounds = "volume_z" in surface_mapping
     bands = [b for b in ("on", "off") if f"{b}_support" in surface_mapping]
     has_extra = "extra_surface_supports" in surface_mapping
-    if not has_faces and not bands and not has_extra:
+    if not has_bounds and not bands and not has_extra:
         return None
 
     nodes = np.asarray(nodes, dtype=float)
@@ -688,18 +688,18 @@ def node_coverage(
     xy = model.xy(nodes)
 
     coverage: dict = {}
-    if has_faces:
+    if has_bounds:
         # z grows with depth (+1) or against it (-1) in each column
         sign = np.sign(model.fields[1](xy) - model.fields[0](xy))
-        faces = np.asarray(surface_mapping["volume_z"], dtype=float)
+        z_bounds = np.asarray(surface_mapping["volume_z"], dtype=float)
         rel = np.empty((len(nodes), 2))
-        for k, face in enumerate(faces):
-            if np.isnan(face):
-                # an unknown face does not bound the column on its side
+        for k, z_bound in enumerate(z_bounds):
+            if np.isnan(z_bound):
+                # an unknown bound does not limit the column on its side
                 rel[:, k] = (-np.inf if k == 0 else np.inf) * sign
             else:
-                at_face = np.column_stack([xy, np.full(len(nodes), face)])
-                rel[:, k] = model.relative(at_face)
+                at_bound = np.column_stack([xy, np.full(len(nodes), z_bound)])
+                rel[:, k] = model.relative(at_bound)
         coverage["depth_rel"] = np.sort(rel, axis=1)
 
     ix, iy = model.pixel(xy)
@@ -792,7 +792,7 @@ def warp_skeleton(
         heights in the surfaces' units), ``voxel_resolution``,
         ``skeleton_nodes_scale``, and ``z_profiles`` and ``xy_profiles``, each
         keyed by ``"length"`` and ``"volume"``. When the mapping carries the
-        volume's faces or band support masks, ``extra["coverage"]`` holds
+        volume's z bounds or band support masks, ``extra["coverage"]`` holds
         `node_coverage`'s record for every node plus ``depth``, the depth range
         the volume covers in the output's z units; `get_coverage` summarises it
         per skeleton.
