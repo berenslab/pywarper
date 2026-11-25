@@ -29,7 +29,7 @@ from importlib import metadata as _metadata
 from typing import Any, Iterator
 
 import numpy as np
-from hea.sparse import cho_solve
+from hea.sparse import cho_factor
 from pygridfit import GamFit, GridFit
 from pygridfit.autosmooth import GAMMA_DEFAULT
 from scipy.interpolate import RegularGridInterpolator
@@ -621,6 +621,48 @@ def assign_local_coordinates(triangles: np.ndarray) -> tuple[np.ndarray, ...]:
     return w1, w2, w3, zeta
 
 
+class CholeskySolver:
+    """
+    Least-squares solves by the normal equations that keep the analysis of the
+    last design matrix.
+
+    hea factorizes AᵀA from A itself (``sym_kind="col"``), on the pattern A's
+    structure gives, so a design with the structure of the one before it is
+    refactorized against that analysis; any other is analyzed afresh. `analyses`
+    counts those.
+    """
+
+    def __init__(self) -> None:
+        self.analyses = 0
+        self._factor = None
+        self._structure: tuple | None = None
+
+    def solve_normal(self, design, right: np.ndarray) -> np.ndarray:
+        """Least-squares solution of ``design @ x = right``."""
+        design = design.tocsc()
+        design.sort_indices()
+        same = self._structure is not None and (
+            self._structure[0] == design.shape
+            and np.array_equal(self._structure[1], design.indptr)
+            and np.array_equal(self._structure[2], design.indices)
+        )
+        if same:
+            self._factor.factorize(design)
+        else:
+            # the old factor goes before the new one is built
+            self._factor = self._structure = None
+            # order="amd": a system is factorized once or twice, so the default
+            # "best" pays METIS's ordering cost up front and never amortizes it.
+            self._factor = cho_factor(design, order="amd", sym_kind="col")
+            self._structure = (
+                design.shape,
+                design.indptr.copy(),
+                design.indices.copy(),
+            )
+            self.analyses += 1
+        return self._factor.solve(design.T @ right)
+
+
 def conformal_map_indep_fixed_diagonals(
     mainDiagDist: float,
     skewDiagDist: float,
@@ -628,13 +670,16 @@ def conformal_map_indep_fixed_diagonals(
     ypos: np.ndarray,
     VZmesh: np.ndarray,
     *,
-    n_anchors: int = 16,  # 4, 8 (default) or 16
+    n_anchors: int = 16,
+    pin_map: np.ndarray | None = None,
+    solver: CholeskySolver | None = None,
     backward_compatible: bool = False,
 ) -> np.ndarray:
     """
     Creates a quasi-conformal 2D mapping of the surface in VZmesh.
-    Diagonal constraints are fixed using mainDiagDist and skewDiagDist
-    for consistent scaling.
+    With 4 anchors the diagonal constraints are fixed using mainDiagDist and
+    skewDiagDist for consistent scaling; with 8 or 16 the pins are placed by
+    `pin_map`.
 
     Parameters
     ----------
@@ -650,10 +695,19 @@ def conformal_map_indep_fixed_diagonals(
         2D array of shape (M, N), representing z-values for each (x, y).
     n_anchors : int, default=16
         Number of anchor points to use for the conformal mapping.
-        Options are 4, 8 (default), or 16 anchors.
+        Options are 4, 8 or 16 anchors.
             - 4   -> original behaviour (two separate solves, then average)
-            - 8   -> add horizontal/vertical mid-lines (single solve)
-            - 16  -> also add the quarter-lines (single solve)
+            - 8   -> pin the corners and the ends of the half lines (single solve)
+            - 16  -> also the ends of the quarter lines (single solve)
+    pin_map : np.ndarray, optional
+        (2, 2) map placing the 8/16-anchor pins, see `anchor_pin_map`, which
+        computes it from `VZmesh` when not given. `build_mapping` passes one map
+        shared by both bands so that their pins agree.
+    solver : CholeskySolver, optional
+        Solves the sparse system. Surfaces on the same grid with the same pins
+        give systems of one sparsity pattern: mapped with one solver, the
+        second reuses the first's analysis. `build_mapping` does so for the
+        two bands.
 
     Returns
     -------
@@ -669,6 +723,8 @@ def conformal_map_indep_fixed_diagonals(
     The final 2D layout merges two separate diagonal constraints.
     """
     M, N = VZmesh.shape
+    if solver is None:
+        solver = CholeskySolver()
 
     if backward_compatible:
         xpos_new = xpos + 1
@@ -742,12 +798,7 @@ def conformal_map_indep_fixed_diagonals(
 
         # AtA is symmetric positive definite, so a sparse Cholesky applies and is
         # several times faster than the general LU of scipy's spsolve.
-        #
-        # order="amd": each system is factorized once, so the default "best" pays
-        # METIS's ordering cost up front and never amortizes it.
-        AtA = (A.T @ A).tocsc()
-        Atb = A.T @ b
-        sol = cho_solve(AtA, Atb, order="amd")
+        sol = solver.solve_normal(A, b)
 
         nf = len(free_pts)
         mapped = np.zeros((vertexCount, 2))
@@ -794,55 +845,87 @@ def conformal_map_indep_fixed_diagonals(
         mappedPositions = 0.5 * (map_main + map_skew)
 
     else:
-        # --- single solve with additional anchors -------------------
-        fixed_pts: list[int] = main_fixed_pts + skew_fixed_pts
-        fixed_vals: list[np.ndarray] = [main_fixed_vals, skew_fixed_vals]
-
-        # add mid-lines (8 anchors) and quarter-lines (16 anchors)
-        if n_anchors >= 8:
-            mid_cols = [N // 2]
-            mid_rows = [M // 2]
-            if n_anchors == 16:
-                mid_cols += [N // 4, 3 * N // 4]
-                mid_rows += [M // 4, 3 * M // 4]
-
-            # horizontals
-            for c in mid_cols:
-                idx_left = 0 + c * M
-                idx_right = (M - 1) + c * M
-                dz = VZmesh[M - 1, c] - VZmesh[0, c]
-                length = np.sqrt((xpos[-1] - xpos[0]) ** 2 + dz**2)
-                fixed_pts += [idx_left, idx_right]
-                fixed_vals.append(
-                    np.array(
-                        [
-                            [xpos_new[0], ypos_new[c]],
-                            [xpos_new[0] + length, ypos_new[c]],
-                        ]
-                    )
-                )
-
-            # verticals
-            for r in mid_rows:
-                idx_top = r + 0 * M
-                idx_bottom = r + (N - 1) * M
-                dz = VZmesh[r, N - 1] - VZmesh[r, 0]
-                length = np.sqrt((ypos[-1] - ypos[0]) ** 2 + dz**2)
-                fixed_pts += [idx_top, idx_bottom]
-                fixed_vals.append(
-                    np.array(
-                        [
-                            [xpos_new[r], ypos_new[0]],
-                            [xpos_new[r], ypos_new[0] + length],
-                        ]
-                    )
-                )
-
-        fixed_vals = np.vstack(fixed_vals)
+        # --- single solve: the four corners plus the ends of the half lines
+        # (8 anchors) and quarter lines (16 anchors). Every pin is placed by one
+        # linear map, so on a plane the pins agree with each other and the solve
+        # has nothing to reconcile.
+        rows = [0, M - 1, M - 1, 0]
+        cols = [0, N - 1, 0, N - 1]
+        for c in _anchor_lines(N, n_anchors):
+            rows += [0, M - 1]
+            cols += [c, c]
+        for r in _anchor_lines(M, n_anchors):
+            rows += [r, r]
+            cols += [0, N - 1]
+        rows, cols = np.asarray(rows), np.asarray(cols)
+        if pin_map is None:
+            pin_map = anchor_pin_map(VZmesh, xpos, ypos, n_anchors)
+        offsets = np.column_stack([xpos[rows] - xpos[0], ypos[cols] - ypos[0]])
+        fixed_vals = offsets @ np.asarray(pin_map, dtype=float).T + [
+            xpos_new[0],
+            ypos_new[0],
+        ]
+        fixed_pts = list(rows + cols * M)
         free_pts = np.setdiff1d(np.arange(vertexCount), fixed_pts)
         mappedPositions = solve_mapping(fixed_pts, fixed_vals, free_pts)
 
     return mappedPositions
+
+
+def _anchor_lines(n: int, n_anchors: int) -> list[int]:
+    """Grid lines whose two ends are pinned besides the corners."""
+    if n_anchors == 8:
+        return [n // 2]
+    if n_anchors == 16:
+        return [n // 2, n // 4, 3 * n // 4]
+    raise ValueError(f"n_anchors must be 4, 8 or 16, got {n_anchors}")
+
+
+def anchor_pin_map(
+    VZmesh: np.ndarray, xpos: np.ndarray, ypos: np.ndarray, n_anchors: int = 16
+) -> np.ndarray:
+    """
+    The linear map that places the pins of the 8- and 16-anchor conformal map.
+
+    It is the isometric flattening of the surface's least-squares plane,
+    G^(1/2) with G the plane's first fundamental form, scaled so that the pinned
+    lines keep, on average, the length they have along the surface. A plane is
+    therefore flattened exactly, at any tilt, and a curved surface keeps its
+    mean line length.
+
+    Parameters
+    ----------
+    VZmesh : np.ndarray
+        (M, N) surface heights.
+    xpos, ypos : np.ndarray
+        Grid coordinates of the rows (M) and columns (N).
+    n_anchors : {8, 16}, default=16
+        Which lines are pinned.
+
+    Returns
+    -------
+    np.ndarray
+        (2, 2) map from (x, y) offsets on the grid to flat offsets.
+    """
+    VZmesh = np.asarray(VZmesh, dtype=float)
+    xpos = np.asarray(xpos, dtype=float)
+    ypos = np.asarray(ypos, dtype=float)
+    M, N = VZmesh.shape
+    xx, yy = np.meshgrid(xpos, ypos, indexing="ij")
+    design = np.column_stack([xx.ravel(), yy.ravel(), np.ones(xx.size)])
+    a, b, _ = np.linalg.lstsq(design, VZmesh.ravel(), rcond=None)[0]
+    metric = np.array([[1 + a * a, a * b], [a * b, 1 + b * b]])
+    w, v = np.linalg.eigh(metric)
+    lin = v @ np.diag(np.sqrt(w)) @ v.T
+
+    along, flat = 0.0, 0.0
+    for c in _anchor_lines(N, n_anchors):
+        along += np.sqrt(np.diff(xpos) ** 2 + np.diff(VZmesh[:, c]) ** 2).sum()
+        flat += np.linalg.norm(lin @ [xpos[-1] - xpos[0], 0.0])
+    for r in _anchor_lines(M, n_anchors):
+        along += np.sqrt(np.diff(ypos) ** 2 + np.diff(VZmesh[r, :]) ** 2).sum()
+        flat += np.linalg.norm(lin @ [0.0, ypos[-1] - ypos[0]])
+    return lin * (along / flat)
 
 
 def align_mapped_surface(
@@ -968,6 +1051,10 @@ def build_mapping(
     n_anchors: int = 16,  # number of anchor points for conformal mapping, options: 4, 8 or 16
     alignment_patch_size: int = 21,  # size of the local patch for alignment
     *,
+    volume_z: tuple[float | None, float | None] | None = None,
+    on_support: np.ndarray | None = None,
+    off_support: np.ndarray | None = None,
+    extra_surfaces: dict[str, tuple] | None = None,
     verbose: bool = False,
     backward_compatible: bool = False,  # for MATLAB compatibility
 ) -> dict:
@@ -998,10 +1085,28 @@ def build_mapping(
         Sub-sampling stride when reading the SAC surfaces.  A larger value speeds things up at the cost of resolution.  (Formerly `conformalJump`).
     n_anchors : int, default 16
         Number of anchor points used for the conformal mapping.
-        Options are 4, 8 (default), or 16 anchors:
+        Options are 4, 8 or 16 anchors:
             - 4   -> original behaviour (two separate solves, then average)
-            - 8   -> add horizontal/vertical mid-lines (single solve)
-            - 16  -> also add the quarter-lines (single solve)
+            - 8   -> pin the corners and the ends of the half lines (single solve)
+            - 16  -> also the ends of the quarter lines (single solve)
+        With 8 or 16 the pins of both bands are placed by one shared
+        `anchor_pin_map`, so a tilted plane is flattened exactly.
+    volume_z : (float or None, float or None), optional
+        the imaged volume's z bounds, ``(z_min, z_max)``, in the surfaces'
+        units; None for a bound that is unknown. Lets a warp record, per node, how
+        much of its column the volume actually covers.
+    on_support, off_support : np.ndarray of bool, optional
+        Same shape as the surfaces; True where that band was observed rather than
+        filled in or extrapolated. Lets a warp record which nodes sit over an
+        inferred band.
+    extra_surfaces : dict of name -> (height field, relative depth[, observed]), optional
+        Further reference layers, each a height field with the surfaces' shape
+        and the relative depth it is to land at (0 = ON band, 1 = OFF band, e.g.
+        -0.875 for a layer at -10.5 when the bands sit at 0 and 12). Warps then
+        interpolate depth piecewise between the two layers that bracket each
+        node instead of linearly between the bands; lateral positions still come
+        from the two bands. An optional third entry is a boolean mask with the
+        surfaces' shape, True where the layer was observed.
     verbose : bool, default False
         If *True*, print timing information.
 
@@ -1018,7 +1123,76 @@ def build_mapping(
             The x- and y-indices that were actually sampled and mapped.
         ``on_sac_surface`` / ``off_sac_surface``
             The original (subsampled) height fields kept for debugging or visualisation.
+        ``volume_z``, ``on_support``, ``off_support``
+            Only when given: the z bounds (NaN where unknown) and the support masks.
+        ``extra_surface_names``, ``extra_surfaces``, ``extra_surface_depths``
+            Only with `extra_surfaces`: names, (K, X, Y) heights, (K,) depths.
+        ``extra_surface_supports``
+            Only when an extra surface came with its mask: (K, X, Y), all True
+            for a layer given without one.
     """
+    z_bounds = None
+    if volume_z is not None:
+        z_bounds = np.array(
+            [np.nan if v is None else float(v) for v in volume_z], dtype=float
+        )
+        if z_bounds.shape != (2,):
+            raise ValueError("volume_z must be (z_min, z_max).")
+        if np.isfinite(z_bounds).all() and z_bounds[0] >= z_bounds[1]:
+            raise ValueError("volume_z must be (z_min, z_max) with z_min < z_max.")
+    supports = {}
+    for name, support in (("on_support", on_support), ("off_support", off_support)):
+        if support is not None:
+            support = np.asarray(support, dtype=bool)
+            if support.shape != np.shape(on_sac_surface):
+                raise ValueError(
+                    f"{name} must have the surfaces' shape {np.shape(on_sac_surface)}."
+                )
+            supports[name] = support
+    extras = {}
+    if extra_surfaces:
+        names = list(extra_surfaces)
+        heights, depths, observed = [], [], []
+        for name in names:
+            if name in ("on", "off"):
+                raise ValueError("an extra surface cannot be named 'on' or 'off'.")
+            height, depth, *mask = extra_surfaces[name]
+            height = np.asarray(height, dtype=float)
+            if height.shape != np.shape(on_sac_surface):
+                raise ValueError(
+                    f"extra surface {name!r} must have the surfaces' shape "
+                    f"{np.shape(on_sac_surface)}."
+                )
+            if mask and mask[0] is not None:
+                mask = np.asarray(mask[0], dtype=bool)
+                if mask.shape != height.shape:
+                    raise ValueError(
+                        f"the mask of extra surface {name!r} must have the "
+                        f"surfaces' shape {height.shape}."
+                    )
+            else:
+                mask = None
+            heights.append(height)
+            depths.append(float(depth))
+            observed.append(mask)
+        all_depths = np.array([0.0, 1.0] + depths)
+        if len(np.unique(all_depths)) != len(all_depths):
+            raise ValueError(
+                "extra surface depths must differ from each other and from the "
+                "bands (0 and 1)."
+            )
+        extras = {
+            "extra_surface_names": np.array(names),
+            "extra_surfaces": np.stack(heights),
+            "extra_surface_depths": np.array(depths),
+        }
+        if any(mask is not None for mask in observed):
+            extras["extra_surface_supports"] = np.stack(
+                [
+                    np.ones(height.shape, dtype=bool) if mask is None else mask
+                    for height, mask in zip(heights, observed)
+                ]
+            )
 
     if backward_compatible:
         xmin, xmax, ymin, ymax = np.asarray(bounds) - 1  # Convert to 0-based indexing
@@ -1060,6 +1234,13 @@ def build_mapping(
     if verbose:
         print("-> mapping ON (min) surface...")
         start_time = time.time()
+    pin_map = None
+    if n_anchors != 4:
+        pin_map = 0.5 * (
+            anchor_pin_map(on_subsampled, sampled_x_idx, sampled_y_idx, n_anchors)
+            + anchor_pin_map(off_subsampled, sampled_x_idx, sampled_y_idx, n_anchors)
+        )
+    solver = CholeskySolver()
     mapped_on = conformal_map_indep_fixed_diagonals(
         float(main_diag_dist),
         float(skew_diag_dist),
@@ -1067,6 +1248,8 @@ def build_mapping(
         sampled_y_idx,
         on_subsampled,
         n_anchors=n_anchors,
+        pin_map=pin_map,
+        solver=solver,
         backward_compatible=backward_compatible,
     )
     if verbose:
@@ -1082,8 +1265,11 @@ def build_mapping(
         sampled_y_idx,
         off_subsampled,
         n_anchors=n_anchors,
+        pin_map=pin_map,
+        solver=solver,
         backward_compatible=backward_compatible,
     )
+    del solver  # and with it the factor, before the bands are aligned
     if verbose:
         print(f"    done in {time.time() - start_time:.2f} seconds.")
 
@@ -1102,7 +1288,7 @@ def build_mapping(
         alignment_patch_size,
     )
 
-    return {
+    mapping = {
         "mapped_on": mapped_on,  # formerly `mappedMinPositions`
         "mapped_off": map_off_aligned,  # formerly `mappedMaxPositions`
         "main_diag_dist": main_diag_dist,  # same as MATLAB `mainDiagDist`
@@ -1118,3 +1304,82 @@ def build_mapping(
             "pywarper_version": _PYWARPER_VERSION,
         },
     }
+    if z_bounds is not None:
+        mapping["volume_z"] = z_bounds
+    mapping.update(supports)
+    mapping.update(extras)
+    return mapping
+
+
+def map_distortion(mapping: dict, mask: np.ndarray | None = None) -> dict:
+    """
+    Local length scale and anisotropy of a mapping's flattened bands.
+
+    At every sampled vertex the flattened map's Jacobian is compared with the
+    band's own metric: the singular values s1 >= s2 of dU G^(-1/2), with G the
+    band's first fundamental form, give the local length scale sqrt(s1 * s2)
+    (1 = lengths kept) and the anisotropy s1 / s2 (1 = angles kept). A
+    conformal map keeps the anisotropy at 1 and lets the length scale drift; the
+    retina is best served by both staying near 1.
+
+    Parameters
+    ----------
+    mapping : dict
+        Output of `build_mapping`.
+    mask : np.ndarray of bool, optional
+        Same shape as the full surfaces, e.g. where the tissue is. Only the
+        sampled vertices inside it enter the summary; edge vertices, where the
+        derivatives are one-sided, are always left out of it.
+
+    Returns
+    -------
+    dict
+        ``"on"`` and ``"off"``, each with ``length_scale`` and ``anisotropy``
+        arrays over the sampled grid (shape (len(sampled_x_idx),
+        len(sampled_y_idx))) and ``summary``: the median, 1st and 99th
+        percentile of the length scale and the 99th percentile of the
+        anisotropy over the summarised vertices.
+    """
+    xi = np.asarray(mapping["sampled_x_idx"], dtype=float)
+    yi = np.asarray(mapping["sampled_y_idx"], dtype=float)
+    m, n = len(xi), len(yi)
+    sx = np.asarray(mapping["sampled_x_idx"], dtype=int)
+    sy = np.asarray(mapping["sampled_y_idx"], dtype=int)
+    keep = np.zeros((m, n), dtype=bool)
+    keep[1:-1, 1:-1] = True
+    if mask is not None:
+        keep &= np.asarray(mask, dtype=bool)[np.ix_(sx, sy)]
+
+    out = {}
+    for band in ("on", "off"):
+        u = np.asarray(mapping[f"mapped_{band}"], dtype=float)
+        u = u.reshape(n, m, 2).transpose(1, 0, 2)  # vertex r + c*M -> (r, c)
+        z = np.asarray(mapping[f"{band}_sac_surface"], dtype=float)[np.ix_(sx, sy)]
+        jac = np.stack([np.gradient(u, xi, axis=0), np.gradient(u, yi, axis=1)], -1)
+        zx = np.gradient(z, xi, axis=0)
+        zy = np.gradient(z, yi, axis=1)
+        g = np.empty((m, n, 2, 2))
+        g[..., 0, 0] = 1 + zx**2
+        g[..., 0, 1] = g[..., 1, 0] = zx * zy
+        g[..., 1, 1] = 1 + zy**2
+        w, v = np.linalg.eigh(g)
+        g_inv_sqrt = np.einsum("...ij,...j,...kj->...ik", v, 1 / np.sqrt(w), v)
+        sv = np.linalg.svd(jac @ g_inv_sqrt, compute_uv=False)
+        length = np.sqrt(sv[..., 0] * sv[..., 1])
+        aniso = sv[..., 0] / sv[..., 1]
+        sel = length[keep]
+        out[band] = {
+            "length_scale": length,
+            "anisotropy": aniso,
+            "summary": {
+                "length_scale_median": float(np.median(sel)) if sel.size else np.nan,
+                "length_scale_p1": float(np.percentile(sel, 1)) if sel.size else np.nan,
+                "length_scale_p99": float(np.percentile(sel, 99))
+                if sel.size
+                else np.nan,
+                "anisotropy_p99": float(np.percentile(aniso[keep], 99))
+                if sel.size
+                else np.nan,
+            },
+        }
+    return out

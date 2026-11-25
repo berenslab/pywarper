@@ -20,6 +20,59 @@ def resolve_conformal_jump(
     return int(conformal_jump)
 
 
+def surface_lattice(
+    surface_mapping: dict,
+    *,
+    conformal_jump: int,
+    backward_compatible: bool = False,
+) -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float
+]:
+    """
+    The mapping's vertices as the lattice they lie on.
+
+    Returns
+    -------
+    x_vals, y_vals : (nx,), (ny,) int
+        Where the lattice's rows and columns are, in the surfaces' units.
+    on_depths, off_depths : (nx, ny)
+        Heights of the two bands at the vertices.
+    mapped_on, mapped_off : (nx * ny, 2)
+        Flattened positions of the vertices, the first index running fastest.
+    med_z_on, med_z_off : float
+        Median heights of the two bands over the lattice.
+    """
+    mapped_on = np.asarray(surface_mapping["mapped_on"], dtype=float)
+    mapped_off = np.asarray(surface_mapping["mapped_off"], dtype=float)
+    on_sac_surface = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
+    off_sac_surface = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
+
+    first = 1 if backward_compatible else 0
+    sampled_x_idx = np.asarray(surface_mapping["sampled_x_idx"], dtype=int) + first
+    sampled_y_idx = np.asarray(surface_mapping["sampled_y_idx"], dtype=int) + first
+
+    x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
+    y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
+    on_depths = on_sac_surface[x_vals[:, None] - first, y_vals - first]
+    off_depths = off_sac_surface[x_vals[:, None] - first, y_vals - first]
+
+    expected = x_vals.size * y_vals.size
+    if mapped_on.shape[0] != expected or mapped_off.shape[0] != expected:
+        raise ValueError(
+            "Surface mapping size mismatch: mapped_on/mapped_off do not match sampled grid."
+        )
+    return (
+        x_vals,
+        y_vals,
+        on_depths,
+        off_depths,
+        mapped_on,
+        mapped_off,
+        float(np.median(on_depths)),
+        float(np.median(off_depths)),
+    )
+
+
 def build_surface_correspondences(
     surface_mapping: dict,
     *,
@@ -33,51 +86,26 @@ def build_surface_correspondences(
     -------
     on_input_pts, off_input_pts, on_output_pts, off_output_pts, med_z_on, med_z_off
     """
-    mapped_on = np.asarray(surface_mapping["mapped_on"], dtype=float)
-    mapped_off = np.asarray(surface_mapping["mapped_off"], dtype=float)
-    on_sac_surface = np.asarray(surface_mapping["on_sac_surface"], dtype=float)
-    off_sac_surface = np.asarray(surface_mapping["off_sac_surface"], dtype=float)
-
-    if backward_compatible:
-        sampled_x_idx = np.asarray(surface_mapping["sampled_x_idx"], dtype=int) + 1
-        sampled_y_idx = np.asarray(surface_mapping["sampled_y_idx"], dtype=int) + 1
-    else:
-        sampled_x_idx = np.asarray(surface_mapping["sampled_x_idx"], dtype=int)
-        sampled_y_idx = np.asarray(surface_mapping["sampled_y_idx"], dtype=int)
-
-    x_vals = np.arange(sampled_x_idx[0], sampled_x_idx[-1] + 1, conformal_jump)
-    y_vals = np.arange(sampled_y_idx[0], sampled_y_idx[-1] + 1, conformal_jump)
+    (
+        x_vals,
+        y_vals,
+        on_depths,
+        off_depths,
+        mapped_on,
+        mapped_off,
+        med_z_on,
+        med_z_off,
+    ) = surface_lattice(
+        surface_mapping,
+        conformal_jump=conformal_jump,
+        backward_compatible=backward_compatible,
+    )
     xmesh, ymesh = np.meshgrid(x_vals, y_vals, indexing="ij")
-
-    if backward_compatible:
-        on_subsampled_depths = on_sac_surface[x_vals[:, None] - 1, y_vals - 1]
-        off_subsampled_depths = off_sac_surface[x_vals[:, None] - 1, y_vals - 1]
-    else:
-        on_subsampled_depths = on_sac_surface[x_vals[:, None], y_vals]
-        off_subsampled_depths = off_sac_surface[x_vals[:, None], y_vals]
-
-    expected = xmesh.size
-    if mapped_on.shape[0] != expected or mapped_off.shape[0] != expected:
-        raise ValueError(
-            "Surface mapping size mismatch: mapped_on/mapped_off do not match sampled grid."
-        )
-
-    med_z_on = float(np.median(on_subsampled_depths))
-    med_z_off = float(np.median(off_subsampled_depths))
-
     on_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            on_subsampled_depths.ravel(order="F"),
-        ]
+        [xmesh.ravel(order="F"), ymesh.ravel(order="F"), on_depths.ravel(order="F")]
     )
     off_input_pts = np.column_stack(
-        [
-            xmesh.ravel(order="F"),
-            ymesh.ravel(order="F"),
-            off_subsampled_depths.ravel(order="F"),
-        ]
+        [xmesh.ravel(order="F"), ymesh.ravel(order="F"), off_depths.ravel(order="F")]
     )
     on_output_pts = np.column_stack(
         [mapped_on[:, 0], mapped_on[:, 1], np.full(mapped_on.shape[0], med_z_on)]
