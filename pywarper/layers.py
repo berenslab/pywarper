@@ -1011,7 +1011,7 @@ def save_map(mapping: dict, path: str | Path) -> None:
 
 def load_map(path: str | Path) -> dict:
     """Read a map written by `save_map`."""
-    with np.load(path, allow_pickle=False) as stored:
+    with np.load(path, allow_pickle=True) as stored:
         mapping = {key: stored[key] for key in stored.files}
     for key, value in mapping.items():
         if key in ("meta", "provenance"):
